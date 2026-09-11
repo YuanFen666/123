@@ -548,7 +548,20 @@ def main():
         
         # 获取所有的课程列表
         all_course = chaoxing.get_course_list()
-        
+
+        # 考试看板（只读：只列出考试和截止时间，绝不进考场、绝不提交）
+        # 失败也只记一条警告，绝不影响刷课主流程
+        if str_to_bool(common_config.get("exam_watch", True)):
+            try:
+                from api.exam import ExamWatch
+                try:
+                    warn_hours = float(common_config.get("exam_warn_hours") or 48)
+                except (TypeError, ValueError):
+                    warn_hours = 48.0
+                ExamWatch(notification, warn_hours=warn_hours).run(all_course)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"考试看板执行失败（不影响刷课）: {type(e).__name__}: {e}")
+
         # 过滤要学习的课程
         course_task = filter_courses(all_course, common_config.get("course_list"))
         

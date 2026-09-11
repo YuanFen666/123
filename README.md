@@ -93,6 +93,23 @@ provider = TikuIcodef,TikuAnevol,AI
   > 这个 bug 一直存在，只是原版题库命中率低、几乎不写缓存，所以从没暴露；
   > 接了题库链之后命中率接近 100%，缓存写入频率暴增才把它打出来。
 
+### 7. 考试看板（只读提醒）
+
+```ini
+[common]
+exam_watch = true        ; 每次运行列出所有考试的名称/状态/截止倒计时
+exam_warn_hours = 48     ; 剩余不足 48 小时时每次运行都提醒
+```
+
+只调一个**只读**的列表接口（`exam-ans/exam/phone/task-list`），把考试写进日志/控制台，
+配了通知渠道还会推手机。**它不会替你进考场，也不会提交任何东西。**
+
+**为什么不做自动考试**：考试的接口族（`exam-ans/exam/**` 手机端 API）与章节测验完全不同，
+提交接口的签名里要塞「屏幕点击坐标」——本质是伪装真机真人操作；若考试要求人脸识别，
+参考实现还会上传预存人脸照片去过 `face-compare`。这分别是绕过反机器人和绕过身份核验，本项目不做。
+另外**进入考场即刻开始计时、到点自动交卷**，「只答题不交卷」的安全中间态并不存在。
+完整分析见 [说明文档.md 第十四章](说明文档.md)。
+
 ---
 
 ## 二、目录结构
@@ -100,13 +117,14 @@ provider = TikuIcodef,TikuAnevol,AI
 ```
 .
 ├── README.md                    本文件
-├── 说明文档.md                  完整排查/实测记录（含踩坑清单）
+├── 说明文档.md                  完整排查/实测记录（含考试可行性报告、踩坑清单）
 ├── config.ini.example           配置模板（复制成 config.ini 再填）
 ├── start_chaoxing.bat           一键启动（Windows，GBK 编码）
 ├── 源码/
 │   ├── chaoxing-fixed/          主程序源码
 │   │   ├── main.py              入口：worker 线程池 + 看门狗
 │   │   ├── api/answer.py        ★ 题库实现（题库链 / ANEVOL / 网课小工具 / AI 兜底）
+│   │   ├── api/exam.py          ★ 考试看板（只读）
 │   │   ├── api/base.py          超星接口封装（视频/文档/答题）
 │   │   ├── resource/            字体映射表（题干乱码修复用）
 │   │   ├── selftest_*.py        离线自测（见下）
@@ -184,7 +202,7 @@ pyinstaller --noconfirm --clean chaoxing-3.1.4-fixed.spec
 
 ## 四、自测
 
-全部为**离线自测**（用假响应，不联网、不消耗额度），共 **63 项断言**：
+全部为**离线自测**（用假响应，不联网、不消耗额度），共 **75 项断言**：
 
 ```bash
 cd 源码/chaoxing-fixed
@@ -192,8 +210,10 @@ python selftest_anevol.py          # ANEVOL 答案映射链路（8 项）
 python selftest_anevol_errors.py   # ANEVOL 错误路径 / 熔断（12 项）
 python selftest_worker.py          # worker 线程自愈（5 项）
 python selftest_icodef.py          # 网课小工具题库 + 并发串行化（18 项）
-python selftest_chain.py           # 题库链回退 + 题号预处理 + 日志级别（13 项）
+python selftest_chain.py           # 题库链回退 + 题号预处理 + 日志级别 + BOM（14 项）
 python selftest_ai_fallback.py     # AI 兜底（12 项）
+python selftest_cache.py           # 答案缓存并发写入竞态（4 项）
+python selftest_exam.py            # 考试看板解析与提醒去重（7 项）
 ```
 
 真实网络冒烟（**会消耗 ANEVOL 额度**）：
