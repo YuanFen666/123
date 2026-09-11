@@ -11,6 +11,7 @@
 
 ⚠️ 注意：进考场之后的真实请求（start/fetch/submit）**无法离线验证**，那部分只能真跑。
 """
+import json
 import os
 import sys
 
@@ -20,7 +21,8 @@ from bs4 import BeautifulSoup
 
 from api.exam_take import (ExamQuestion, ExamAborted, ExamTaker, get_exam_signature,
                            judgement_value, parse_question, to_option_keys, QT_SINGLE,
-                           QT_MULTI, QT_JUDGE, QT_BLANK)
+                           QT_MULTI, QT_JUDGE, QT_BLANK,
+                           SlideCaptcha, CAPTCHA_CONF, CAPTCHA_IMAGE, CAPTCHA_CHECK)
 
 
 def report(name, ok, extra=""):
@@ -234,6 +236,106 @@ def main():
     except Exception as e:  # noqa: BLE001
         ok, detail = False, "  异常: {}: {}".format(type(e).__name__, e)
     results.append(report("滑块识别（纯 PIL，无 cv2/numpy 也能用）", ok, detail))
+
+    # ---- 8b) 滑块识别：滑块图是「小图」的情况（真实接口很可能是这种）----
+    # 上面 8 用的是「与背景同尺寸的滑块图」；这里用小图，且缺口处故意调亮，
+    # 检验二维搜索 + 边缘匹配是否还找得准。
+    small_piece = bg.crop((TARGET_X, TARGET_Y, TARGET_X + PW, TARGET_Y + PH))
+    b3 = io.BytesIO()
+    small_piece.save(b3, "PNG")
+    bg_gap = bg.copy()
+    # 把缺口区域整体调亮（模拟真实的"挖洞"效果）
+    gap = bg.crop((TARGET_X, TARGET_Y, TARGET_X + PW, TARGET_Y + PH)).point(lambda v: min(255, v + 55))
+    bg_gap.paste(gap, (TARGET_X, TARGET_Y))
+    b4 = io.BytesIO()
+    bg_gap.save(b4, "PNG")
+    try:
+        got = SlideCaptcha._match_pil(b4.getvalue(), b3.getvalue())
+        ok = abs(got - TARGET_X) <= 4
+        detail = "  真实缺口 x={} 识别出的 x={}（滑块为小图 + 缺口调亮）".format(TARGET_X, got)
+    except Exception as e:  # noqa: BLE001
+        ok, detail = False, "  异常: {}: {}".format(type(e).__name__, e)
+    results.append(report("滑块识别-小图模式 + 缺口调亮（不假设位置、对亮度不敏感）", ok, detail))
+
+    # ---- 9) 整个滑块验证码流程（离线：伪造三个接口 + 图片下载）----
+    # 这次上线第一次真跑就栽在「接口给的是图片 URL，不是图片字节」上，
+    # 所以必须把整条链路（取时间->取图->下载->识别->校验）都测一遍。
+    class CapResp:
+        def __init__(self, text=None, content=b""):
+            self.text = text or ""
+            self.content = content
+
+    class CapSession:
+        """按 URL 分派：配置接口 / 取图接口 / 图片本身 / 校验接口"""
+        def __init__(self, shade, cutout, result=True, validate="VALID-123", wrong_first=0):
+            self.shade, self.cutout = shade, cutout
+            self.result, self.validate = result, validate
+            self.wrong_first = wrong_first
+            self.calls = []
+            self.check_x = []
+
+        def get(self, url, **kw):
+            self.calls.append(url)
+            if url == CAPTCHA_CONF:
+                return CapResp('cx_captcha_function({"t": 1700000000000})')
+            if url == CAPTCHA_IMAGE:
+                return CapResp('cx_captcha_function(' + json.dumps({
+                    "token": "TK-1",
+                    "imageVerificationVo": {
+                        "shadeImage": "https://captcha.example/shade.png",
+                        "cutoutImage": "https://captcha.example/cutout.png",
+                    }}) + ')')
+            if url.endswith("shade.png"):
+                return CapResp(content=self.shade)
+            if url.endswith("cutout.png"):
+                return CapResp(content=self.cutout)
+            if url == CAPTCHA_CHECK:
+                arr = json.loads(kw["params"]["textClickArr"])
+                self.check_x.append(arr[0]["x"])
+                if len(self.check_x) <= self.wrong_first:
+                    return CapResp('cx_captcha_function({"result": false})')
+                # 【还原真实结构】validate 藏在 extraData（一个 JSON 字符串）里，
+                # 不是顶层字段 —— 线上就是取错字段导致拿到空 validate。
+                extra = json.dumps({"validate": self.validate})
+                return CapResp('cx_captcha_function(' + json.dumps(
+                    {"result": True, "extraData": extra}) + ')')
+            raise AssertionError("测试没预料到的请求: {}".format(url))
+
+    from api.exam_take import SlideCaptcha as SC
+
+    # 造一张带已知缺口的滑块图
+    W2, H2, PW2, PH2, TX2, TY2 = 300, 150, 46, 42, 121, 55
+    _rnd.seed(11)
+    bg2 = Image.new("RGB", (W2, H2), (240, 240, 240))
+    d2 = ImageDraw.Draw(bg2)
+    for _ in range(80):
+        x1, y1 = _rnd.randint(0, W2), _rnd.randint(0, H2)
+        d2.line([x1, y1, x1 + 20, y1 + 15],
+                fill=(_rnd.randint(0, 255), _rnd.randint(0, 255), _rnd.randint(0, 255)), width=3)
+    cut2 = Image.new("RGBA", (W2, H2), (0, 0, 0, 0))
+    cut2.paste(bg2.crop((TX2, TY2, TX2 + PW2, TY2 + PH2)), (TX2, TY2))
+    bb1, bb2 = io.BytesIO(), io.BytesIO()
+    bg2.save(bb1, "PNG")
+    cut2.save(bb2, "PNG")
+
+    fs = CapSession(bb1.getvalue(), bb2.getvalue())
+    try:
+        val = SC(fs, "CAPTCHA-ID", "https://mooc1-api.chaoxing.com/").solve()
+        ok = (val == "VALID-123" and len(fs.check_x) == 1 and abs(fs.check_x[0] - TX2) <= 3)
+        detail = "  拿到 validate={!r}，提交的 x={}（真实缺口 {}）".format(val, fs.check_x, TX2)
+    except Exception as e:  # noqa: BLE001
+        ok, detail = False, "  异常: {}: {}".format(type(e).__name__, e)
+    results.append(report("滑块验证码全流程（配置->取图->下载->识别->校验）", ok, detail))
+
+    # ---- 10) 校验第一次失败要自动重试 ----
+    fs2 = CapSession(bb1.getvalue(), bb2.getvalue(), wrong_first=1)
+    try:
+        val = SC(fs2, "CAPTCHA-ID", "https://mooc1-api.chaoxing.com/").solve()
+        ok = (val == "VALID-123" and len(fs2.check_x) == 2)
+        detail = "  尝试 {} 次后通过".format(len(fs2.check_x))
+    except Exception as e:  # noqa: BLE001
+        ok, detail = False, "  异常: {}: {}".format(type(e).__name__, e)
+    results.append(report("验证码校验失败会自动换图重试", ok, detail))
 
     print("-" * 100)
     print(" 结果: {} passed, {} failed".format(sum(results), len(results) - sum(results)))

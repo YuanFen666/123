@@ -135,7 +135,14 @@ class SlideCaptcha:
         }, headers={"Referer": self.referer}, timeout=20)
         self.server_time = self._parse_callback(r.text)["t"]
 
-    def _get_images(self):
+    def _get_images(self) -> "Tuple[bytes, bytes]":
+        """
+        获取滑块图。
+
+        【坑】这个接口返回的 shadeImage / cutoutImage 是图片 **URL**，不是图片本身，
+        必须再 GET 一次把字节下下来 —— 早先直接把 URL 字符串丢给 PIL，
+        报的是 "a bytes-like object is required, not 'str'"。
+        """
         captcha_key = md5("{}{}".format(self.server_time, uuid.uuid4()).encode()).hexdigest()
         self.iv = md5("{}{}{}{}".format(
             self.captcha_id, "slide", get_ts(), uuid.uuid4()).encode()).hexdigest()
@@ -150,72 +157,63 @@ class SlideCaptcha:
         data = self._parse_callback(r.text)
         self.token = data["token"]
         vo = data["imageVerificationVo"]
-        return vo["shadeImage"], vo["cutoutImage"]
+        shade_url, cutout_url = vo["shadeImage"], vo["cutoutImage"]
+        logger.debug("验证码图片地址: {} | {}".format(str(shade_url)[:90], str(cutout_url)[:90]))
+        shade = self.session.get(shade_url, headers={"Referer": self.referer}, timeout=20).content
+        cutout = self.session.get(cutout_url, headers={"Referer": self.referer}, timeout=20).content
+        if not shade or not cutout:
+            raise RuntimeError("验证码图片下载为空")
+        return shade, cutout
 
     def _match(self, shade: bytes, cutout: bytes) -> int:
-        """算缺口 x 坐标。三级降级：cv2 -> ddddocr -> 纯 PIL。"""
-        # 主方案：OpenCV 模板匹配（与参考实现一致）
-        try:
-            import cv2
-            import numpy as np
-            s = cv2.imdecode(np.frombuffer(shade, np.uint8), cv2.IMREAD_COLOR)
-            c = cv2.imdecode(np.frombuffer(cutout, np.uint8), cv2.IMREAD_COLOR)
-            gray = cv2.cvtColor(c, cv2.COLOR_BGR2GRAY)
-            contours, _ = cv2.findContours(gray, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            if contours:
-                _, cy, _, _ = cv2.boundingRect(contours[0])
-                c_teil = c[cy + 2: cy + 44, 8:48]
-                s_teil = s[max(0, cy - 2): cy + 50]
-                res = cv2.matchTemplate(s_teil, c_teil, cv2.TM_CCOEFF_NORMED)
-                _, _, _, max_loc = cv2.minMaxLoc(res)
-                return int(max_loc[0]) - 5
-        except Exception as e:  # noqa: BLE001
-            logger.debug("cv2 识别滑块失败 -> {}: {}".format(type(e).__name__, e))
+        """
+        算缺口 x 坐标。
 
-        # 备用一：ddddocr 自带滑块
-        try:
-            import ddddocr
-            det = ddddocr.DdddOcr(det=False, ocr=False, show_ad=False)
-            return int(det.slide_match(cutout, shade, simple_target=True)["target"][0])
-        except Exception as e:  # noqa: BLE001
-            logger.debug("ddddocr 识别滑块失败 -> {}: {}".format(type(e).__name__, e))
-
-        # 备用二：只用 PIL（打包进 exe 的就是这条，体积代价最小）
+        【为什么只留 PIL 这条】
+        参考实现用 cv2 时假设「滑块在 cutout 图里的 y 就等于它在背景里的 y」、
+        且 x 固定取 8:48 —— 这只在「cutout 是整张图、滑块贴在固定位置」时成立。
+        实测换成合成图后它直接返回 -5（明显跑飞），说明前提不可靠。
+        所以这里改成**不做任何位置假设的二维搜索 + 边缘匹配**：
+          - 二维搜索：y 也一起找，不假设滑块在 cutout 里的位置
+          - 边缘匹配：用 FIND_EDGES 后的灰度做差，对"缺口处被调亮/压暗"不敏感
+        这条路径只用 PIL，可以离线用合成图验证（自测里就是这么测的）。
+        """
         return self._match_pil(shade, cutout)
 
     @staticmethod
-    def _match_pil(shade: bytes, cutout: bytes) -> int:
-        """
-        纯 PIL 的滑块匹配：把滑块图裁出来，在背景图上从左往右滑，
-        用 ImageChops.difference 算平均差，差最小的位置就是缺口。
-        用 PIL 的 C 实现做像素运算，比纯 Python 循环快得多，也不需要 numpy/cv2。
-        """
+    def _match_pil(shade: bytes, cutout: bytes, step: int = 1) -> int:
         import io
-        from PIL import Image, ImageChops, ImageStat
+        from PIL import Image, ImageChops, ImageFilter, ImageStat
+
         bg = Image.open(io.BytesIO(shade)).convert("L")
         piece_img = Image.open(io.BytesIO(cutout))
-        # 滑块图通常是带透明通道的，用 alpha 求真实形状的包围盒
+
+        # 1) 取滑块的形状：优先用 alpha 通道，没有就按「非接近白色」算
         if piece_img.mode in ("RGBA", "LA"):
             alpha = piece_img.convert("RGBA").split()[-1]
             bbox = alpha.point(lambda v: 255 if v > 24 else 0).getbbox()
         else:
             bbox = None
         if not bbox:
-            # 没有透明通道：把近白像素当背景
-            gray = piece_img.convert("L")
-            bbox = gray.point(lambda v: 255 if v < 235 else 0).getbbox()
+            bbox = piece_img.convert("L").point(lambda v: 255 if v < 235 else 0).getbbox()
         if not bbox:
             raise RuntimeError("滑块图是空的，识别不了")
-        piece = piece_img.convert("L").crop(bbox)
-        pw, ph = piece.size
 
-        best_score, best_x = None, 0
-        for x in range(0, max(1, bg.size[0] - pw)):
-            win = bg.crop((x, bbox[1], x + pw, bbox[1] + ph))
-            score = sum(ImageStat.Stat(ImageChops.difference(win, piece)).mean)
-            if best_score is None or score < best_score:
-                best_score, best_x = score, x
-        return int(best_x)
+        piece = piece_img.convert("L").crop(bbox).filter(ImageFilter.FIND_EDGES)
+        pw, ph = piece.size
+        bg_edge = bg.filter(ImageFilter.FIND_EDGES)
+        bw, bh = bg_edge.size
+
+        best_score, best_xy = None, (0, 0)
+        ys = range(0, max(1, bh - ph), step)
+        xs = range(0, max(1, bw - pw), step)
+        for y in ys:
+            for x in xs:
+                win = bg_edge.crop((x, y, x + pw, y + ph))
+                score = sum(ImageStat.Stat(ImageChops.difference(win, piece)).mean)
+                if best_score is None or score < best_score:
+                    best_score, best_xy = score, (x, y)
+        return int(best_xy[0])
 
     def _check(self, x: int) -> str:
         r = self.session.get(CAPTCHA_CHECK, params={
@@ -226,7 +224,21 @@ class SlideCaptcha:
         }, headers={"Referer": self.referer}, timeout=20)
         data = self._parse_callback(r.text)
         if data.get("result") is True:
-            return data.get("validate") or ""
+            # 【坑】验证码通过后的 validate **不在顶层**，而是塞在 extraData 里，
+            # 而且 extraData 本身是个 JSON 字符串。取错字段就会拿到空串，
+            # 开考时会被服务端判「验证码错误！」—— 实测踩到过。
+            extra = data.get("extraData")
+            if extra:
+                try:
+                    val = json.loads(extra).get("validate")
+                    if val:
+                        return str(val)
+                except (TypeError, ValueError) as e:
+                    logger.warning("解析验证码 extraData 失败 -> {}".format(e))
+            if data.get("validate"):
+                return str(data["validate"])
+            logger.warning("验证码通过了但没解析出 validate，返回空值: {}".format(str(data)[:160]))
+            return ""
         raise RuntimeError("验证码校验未通过: {}".format(str(data)[:120]))
 
     def solve(self, max_try: int = 3) -> str:
