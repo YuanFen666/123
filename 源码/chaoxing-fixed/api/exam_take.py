@@ -497,7 +497,7 @@ class ExamInProgressError(Exception):
 class ExamTaker:
     def __init__(self, course: dict, exam, tiku=None, *, auto_submit: bool = False,
                  min_cover: float = 0.9, min_remain_min: int = 5, overwrite: bool = False,
-                 max_questions: int = 200):
+                 max_questions: int = 200, openc: str = ""):
         self.course = course
         self.exam = exam                      # api.exam.ExamInfo
         self.tiku = tiku
@@ -526,7 +526,9 @@ class ExamTaker:
         self.last_update_time = 0
         self.started = False
         # 整卷模式需要的东西（从开考重定向和整卷页里取）
-        self.openc = ""
+        # openc 优先用配置里给的：它从开考重定向里不一定拿得到，
+        # 但就明明白白写在考试页 URL 里（?openc=xxxxxxxx），用户复制一下即可。
+        self.openc = (openc or "").strip()
         self.paper_id = ""
         self.exam_create_user_id = ""
         self.statistics = {}   # 占位，避免旧代码引用
@@ -916,6 +918,10 @@ class ExamTaker:
         logger.info("整卷模式：解析到 {} 题；paperId={} examCreateUserId={} openc={}".format(
             len(questions), self.paper_id or "(没找到)", self.exam_create_user_id or "(没找到)",
             self.openc or "(空)"))
+        if not questions and not self.openc:
+            logger.warning("整卷页返回 0 题，且 openc 为空 —— 整卷入口需要它。")
+            logger.warning("请把浏览器考试页地址栏里 ?openc= 后面那串复制到 config.ini：")
+            logger.warning("    [common]  exam_openc = xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
         return questions
 
     def save_preview(self, index: int, q: Optional[ExamQuestion], final: bool = False) -> dict:

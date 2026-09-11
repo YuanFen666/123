@@ -123,6 +123,11 @@ def parse_args():
         action="store_true",
         help="【危险】自动交卷（需与 --exam-take 同用；覆盖率达标才会交）",
     )
+    parser.add_argument(
+        "--exam-openc",
+        type=str, default=None,
+        help="整卷模式入口参数：从浏览器考试页 URL 里 ?openc= 后面那串复制过来",
+    )
 
     # 在解析之前捕获 -h 的行为
     if len(sys.argv) == 2 and sys.argv[1] in {"-h", "--help"}:
@@ -229,10 +234,12 @@ def init_config():
     common_config["_all_courses"] = bool(getattr(args, "all_courses", False))
     common_config["_exam_take"] = bool(getattr(args, "exam_take", False))
     common_config["_exam_submit"] = bool(getattr(args, "exam_submit", False))
+    if getattr(args, "exam_openc", None):
+        common_config["exam_openc"] = args.exam_openc.strip()
     return common_config, tiku_config, notification_config
 
 
-def take_exams(watch, exams, courses, tiku, auto_submit: bool) -> None:
+def take_exams(watch, exams, courses, tiku, auto_submit: bool, openc: str = "") -> None:
     """
     对「体检通过、现在能考」的考试执行自动作答。
 
@@ -265,7 +272,7 @@ def take_exams(watch, exams, courses, tiku, auto_submit: bool) -> None:
         if not course:
             logger.warning("跳过《{}》：找不到对应课程信息".format(e.name))
             continue
-        taker = ExamTaker(course, e, tiku, auto_submit=auto_submit)
+        taker = ExamTaker(course, e, tiku, auto_submit=auto_submit, openc=openc)
         try:
             taker.run()
         except ExamAborted as ex:
@@ -691,7 +698,8 @@ def main():
             if common_config.get("_exam_take"):
                 logger.info("考试模式：进入考场自动作答。")
                 take_exams(_watch, _exams, course_task or all_course, chaoxing.tiku,
-                           auto_submit=bool(common_config.get("_exam_submit")))
+                           auto_submit=bool(common_config.get("_exam_submit")),
+                           openc=str(common_config.get("exam_openc") or ""))
             else:
                 logger.info("考试模式：只做考试看板与就绪体检（只读），不进入考场。")
             return
