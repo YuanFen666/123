@@ -337,6 +337,33 @@ def main():
         ok, detail = False, "  异常: {}: {}".format(type(e).__name__, e)
     results.append(report("验证码校验失败会自动换图重试", ok, detail))
 
+    # ---- 11) 移动端请求头（线上就是这条缺失导致「提交失败: 无效操作」）----
+    from api.exam_take import exam_headers, tune_tiku_for_exam
+    h = exam_headers()
+    ok = ("com.chaoxing.mobile" in h.get("User-Agent", "")
+          and h.get("X-Requested-With") == "com.chaoxing.mobile"
+          and "Dalvik" in h.get("User-Agent", ""))
+    results.append(report("考试请求带移动端 UA（否则提交被判「无效操作」）", ok,
+                          "  UA={}…".format(h.get("User-Agent", "")[:52])))
+
+    # ---- 12) 考试模式会压小题库链间隔（否则每题磨好几秒）----
+    from api.answer import TikuIcodef, TikuAnevol, AI
+
+    class FakeChain:
+        def __init__(self):
+            self.providers = [TikuIcodef(), TikuAnevol(), AI()]
+
+    fc = FakeChain()
+    fc.providers[0].min_interval = 1.5
+    fc.providers[1].min_interval = 0.3
+    fc.providers[2].min_interval_seconds = 3.0
+    tune_tiku_for_exam(fc)
+    ok = (fc.providers[0].min_interval <= 0.3 and fc.providers[2].min_interval_seconds <= 0.3)
+    results.append(report("进考场前把题库链间隔压小（提速）", ok,
+                          "  icodef={} ANEVOL={} AI={}".format(
+                              fc.providers[0].min_interval, fc.providers[1].min_interval,
+                              fc.providers[2].min_interval_seconds)))
+
     print("-" * 100)
     print(" 结果: {} passed, {} failed".format(sum(results), len(results) - sum(results)))
     print("=" * 100)

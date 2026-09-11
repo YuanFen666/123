@@ -65,6 +65,49 @@ def get_imei() -> str:
     return _IMEI
 
 
+# 移动端请求头。
+# 【坑】考试走的是手机端接口（mooc1-api.chaoxing.com/exam-ans/exam/phone/*），
+# 服务端会认客户端身份；用桌面 Chrome 的 UA 去 POST 提交，会被回
+# 「无效操作」—— 实测踩到过（答案一条都存不进去）。参考实现的注释也写了
+# "默认使用 APP 的 UA, 因为一些接口为 APP 独占"。
+_ANDROID_VERSION = "Android 10"
+_DEVICE_VENDOR = "MI11"
+_APP_VERSION = "com.chaoxing.mobile/ChaoXingStudy_3_5.1.4_android_phone_614_74"
+
+
+def exam_headers() -> dict:
+    ua = " ".join((
+        "Dalvik/2.1.0 (Linux; U; {}; {} Build/SKQ1.210216.001)".format(_ANDROID_VERSION, _DEVICE_VENDOR),
+        "(device:{})".format(_DEVICE_VENDOR),
+        "Language/zh_CN",
+        _APP_VERSION,
+        "(@Kalimdor)_{}".format(get_imei()),
+    ))
+    return {"User-Agent": ua, "X-Requested-With": "com.chaoxing.mobile"}
+
+
+def tune_tiku_for_exam(tiku) -> None:
+    """
+    考试是按时间走的，题库链那套「防限流慢间隔」在这里反而害事
+    （每题 icodef 1.5s + ANEVOL 重试 + AI 3s，一道题能磨 5 秒以上）。
+    进考场前把这些间隔压到最小，交卷速度优先。
+    """
+    if tiku is None:
+        return
+    targets = list(getattr(tiku, "providers", []) or [])
+    if not targets and not hasattr(tiku, "providers"):
+        targets = [tiku]
+    for p in targets:
+        name = type(p).__name__
+        if name == "TikuIcodef":
+            p.min_interval = 0.3
+        elif name == "AI":
+            p.min_interval_seconds = 0.3
+        elif name == "TikuAnevol":
+            p.min_interval = 0.2
+        logger.debug("考试模式：已把 {} 的请求间隔调小".format(name))
+
+
 def get_ts() -> str:
     return "{}".format(round(time.time() * 1000))
 
@@ -350,17 +393,28 @@ def to_option_keys(answer: str, options: Dict[str, str]) -> str:
     if letters and set(letters) <= set(k.upper() for k in keys):
         return "".join(k for k in keys if k.upper() in set(letters))
 
-    def match(part: str) -> str:
+    def match(part: str, allow_reverse: bool = False) -> str:
         t = _clean(part)
         if not t:
             return ""
         for k, v in options.items():
-            if _subseq(t, _clean(v)) or t in v:
+            cv = _clean(v)
+            if not cv:
+                continue
+            if _subseq(t, cv) or t in v:
                 return k
+        if allow_reverse:
+            # 最后兜底才用：选项被包在答案里（大模型常回 "答案为北京" 这种）
+            for k, v in options.items():
+                cv = _clean(v)
+                if cv and cv in t:
+                    return k
         return ""
 
-    # 【顺序很重要】先拿整串去匹配：选项原文里本身就可能带顿号/逗号
+    # 【顺序很重要】先拿整串做**严格**匹配：选项原文里本身就可能带顿号/逗号
     # （比如选项是 "北京、上海"），先拆开反而谁都匹配不上。
+    # 注意这里不能用宽松匹配 —— 否则 "苹果#香蕉" 会被整串喂给选项 "苹果" 命中，
+    # 多选题就只剩 A 了（自测里就是这么抓到的）。
     whole = match(text)
     if whole:
         return whole
@@ -371,26 +425,34 @@ def to_option_keys(answer: str, options: Dict[str, str]) -> str:
         k = match(part)
         if k and k not in picked:
             picked.append(k)
-    return "".join(k for k in keys if k in picked)
+    if picked:
+        return "".join(k for k in keys if k in picked)
+
+    # 都不行，最后才用宽松匹配兜底
+    return match(text, allow_reverse=True)
 
 
 _TRUE = ("正确", "对", "√", "✓", "是", "true", "t", "a", "1")
 
 
 def judgement_value(answer: str, options: Dict[str, str]) -> str:
+    """判断题答案归一化成 'true' / 'false'。"""
     t = str(answer or "").strip().lower()
     if t in ("true", "false"):
         return t
-    keys = to_option_keys(answer, options)
-    if keys:
-        k = keys[0]
-        return "true" if k.upper() in ("A", "T", "1") else "false"
-    for w in ("错误", "不正确", "不对", "错", "×", "x", "否", "false", "f"):
+    # 【顺序】必须先按词判断，而且**先查错误词** —— "不正确" 里含 "正确"，
+    # 先查正确词会把 "不正确" 判成 true。也不能先走选项字母映射：
+    # 选项 A 是 "正确" 时，"不正确" 会被宽松匹配到 A，同样判反（自测抓到的）。
+    for w in ("错误", "不正确", "不对", "错", "×", "✗", "否", "false", "f"):
         if w in t:
             return "false"
-    for w in _TRUE:
+    for w in ("正确", "对", "√", "✓", "是", "true", "t"):
         if w in t:
             return "true"
+    # 词判断不行，再按选项字母（A/T/1 -> true，其余 -> false）
+    keys = to_option_keys(answer, options)
+    if keys:
+        return "true" if keys[0].upper() in ("A", "T", "1") else "false"
     return ""
 
 
@@ -471,7 +533,7 @@ class ExamTaker:
             "taskrefId": self.exam_id, "courseId": self.course_id, "classId": self.class_id,
             "userId": self._uid(), "role": "", "source": 0,
             "enc_task": getattr(self.exam, "enc_task", ""), "cpi": self.cpi, "vx": 0,
-        }, timeout=25, allow_redirects=False)
+        }, headers=exam_headers(), timeout=25, allow_redirects=False)
         if r.status_code in (301, 302, 303, 307, 308):
             raise ExamAborted("这场考试已经交过卷了（服务端跳转 {}）".format(r.headers.get("Location", "")[:80]))
         if r.status_code != 200:
@@ -516,7 +578,7 @@ class ExamTaker:
             "keyboardDisplayRequiresUserAction": 1, "imei": get_imei(),
             "faceDetection": 0, "facekey": "", "faceDetectionResult": "",
             "captchavalidate": self.captcha_validate, "jt": 0, "code": "",
-        }, timeout=25, allow_redirects=False)
+        }, headers=exam_headers(), timeout=25, allow_redirects=False)
 
         if r.status_code == 200:
             soup = BeautifulSoup(r.text, "lxml")
@@ -543,7 +605,7 @@ class ExamTaker:
             "start": index, "enc": self.enc, "keyboardDisplayRequiresUserAction": 1,
             "monitorStatus": 0, "monitorOp": -1, "remainTimeParam": self.enc_remain_time,
             "relationAnswerLastUpdateTime": self.last_update_time,
-        }, timeout=25)
+        }, headers=exam_headers(), timeout=25)
         soup = BeautifulSoup(r.text, "lxml")
         tip = soup.body.select_one("p.blankTips") if soup.body else None
         if tip:
@@ -576,7 +638,7 @@ class ExamTaker:
             "examRelationAnswerId": self.exam_answer_id,
             "remainTimeParam": self.enc_remain_time,
             "relationAnswerLastUpdateTime": self.last_update_time, "enc": self.enc,
-        }, timeout=25)
+        }, headers=exam_headers(), timeout=25)
         soup = BeautifulSoup(r.text, "lxml")
         sheet: Dict[str, Dict[int, bool]] = {}
         for father in soup.select("ul"):
@@ -612,7 +674,8 @@ class ExamTaker:
         }
         if question is not None:
             data.update(self._answer_form(question))
-        r = self.session.post(EXAM_SUBMIT, params=params, data=data, timeout=25)
+        r = self.session.post(EXAM_SUBMIT, params=params, data=data,
+                              headers=exam_headers(), timeout=25)
         r.raise_for_status()
         js = r.json()
         if js.get("status") != "success":
@@ -655,23 +718,32 @@ class ExamTaker:
             return None
 
     def fill(self, q: ExamQuestion) -> bool:
-        """把题库答案写回 q.old_answer（交给 _answer_form 组装）；成功返回 True。"""
+        """
+        把题库答案写回 q.old_answer（交给 _answer_form 组装）；成功返回 True。
+
+        失败时把原因打清楚 —— 是「三个来源都没答出来」还是「答了但对不上选项」，
+        这两种情况看起来都像"没调用 AI"，日志必须能区分开。
+        """
         ans = self.ask(q)
         if not ans:
+            logger.warning("  题库链三个来源（网课小工具 / ANEVOL / AI）都没给出答案")
             return False
         if q.type == QT_SINGLE:
             keys = to_option_keys(ans, q.options)
             if not keys:
+                logger.warning("  题库答了 {!r}，但映射不到选项上，跳过".format(str(ans)[:50]))
                 return False
             q.old_answer = keys[0]
         elif q.type == QT_MULTI:
             keys = to_option_keys(ans, q.options)
             if not keys:
+                logger.warning("  题库答了 {!r}，但映射不到选项上，跳过".format(str(ans)[:50]))
                 return False
             q.old_answer = "".join(sorted(set(keys)))
         elif q.type == QT_JUDGE:
             v = judgement_value(ans, q.options)
             if not v:
+                logger.warning("  题库答了 {!r}，但判断不出对错，跳过".format(str(ans)[:50]))
                 return False
             q.old_answer = v
         else:
@@ -688,6 +760,8 @@ class ExamTaker:
 
         self.load_cover()
         self.solve_captcha()
+        # 考试按时间走，进考场前把题库链的慢间隔压下去（每题能省好几秒）
+        tune_tiku_for_exam(self.tiku)
         self.start()
 
         try:
