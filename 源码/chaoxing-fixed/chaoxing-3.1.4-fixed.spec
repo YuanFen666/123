@@ -19,7 +19,9 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['ddddocr', 'onnxruntime', 'numpy', 'PIL', 'celery', 'flask', 'matplotlib', 'pandas', 'scipy', 'tkinter', 'PyQt5'],
+    # 注意：PIL 不能排除 —— 考试模式的滑块验证码识别走「纯 PIL」这条路
+    # （cv2 / ddddocr / numpy 体积太大，源码里保留为可选加速路径，打包时不带）
+    excludes=['ddddocr', 'onnxruntime', 'numpy', 'cv2', 'celery', 'flask', 'matplotlib', 'pandas', 'scipy', 'tkinter', 'PyQt5'],
     noarchive=False,
     optimize=0,
 )

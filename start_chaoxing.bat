@@ -6,13 +6,12 @@ cd /d "%~dp0"
 rem ================================================================
 rem  关于代码页（很重要，别随手加 chcp）
 rem  ------------------------------------------------------------------
-rem  本脚本是 GBK(936) 编码的，而中文 Windows 的 cmd 默认代码页就是 936，
-rem  所以不需要 chcp 也能正常显示中文。
-rem  反过来，一旦调用 chcp（哪怕只是 chcp 查一下），cmd 会重建控制台，
-rem  把「重定向进来的 stdin」丢掉 —— 之后所有 set /p 都读到空值，
-rem  菜单会陷入死循环。实测：chcp 936 / chcp 936 >nul / 子 cmd 里 chcp
-rem  全都会触发这个问题。
-rem  所以这里改成：先读注册表拿到系统 OEM 代码页，只有确实不是 936 时才切。
+rem  本脚本是 GBK(936) 编码的，中文 Windows 的 cmd 默认代码页就是 936，
+rem  不需要 chcp 也能正常显示中文。
+rem  反过来，只要调用 chcp（哪怕只是 chcp 查一下），cmd 会重建控制台，
+rem  把「重定向进来的 stdin」丢掉 —— 之后所有 set /p 都读空值、菜单死循环。
+rem  实测：chcp 936 / chcp 936 >nul / 子 cmd 里 chcp 全都会触发。
+rem  所以这里先读注册表拿系统 OEM 代码页，只有确实不是 936 时才切。
 rem ================================================================
 set "OEMCP="
 for /f "tokens=3" %%i in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\Nls\CodePage" /v OEMCP 2^>nul') do set "OEMCP=%%i"
@@ -47,7 +46,7 @@ echo     [1] 视频 + 章节答题模式
 echo         刷课：视频 / 文档 / 阅读 / 章节测验（自动查题作答）
 echo.
 echo     [2] 考试模式
-echo         只做考试看板 + 就绪体检（只读，不刷课、不替你进考场）
+echo         考试看板 / 就绪体检 / 进入考场自动答题
 echo.
 echo     [0] 退出
 echo  ================================================================
@@ -76,13 +75,71 @@ goto DONE
 
 
 :PICK_EXAM
+cls
+echo.
+echo  ================================================================
+echo    考试模式
+echo  ================================================================
+echo     [1] 只看考试情况（只读）
+echo         列出考试、状态、截止时间、能否开考、要不要人脸/验证码
+echo.
+echo     [2] 进考场自动答题，但不交卷   ^<== 第一次建议用这个
+echo         程序替你答题并逐题保存，最后你自己核对后点交卷
+echo.
+echo     [3] 进考场自动答题并自动交卷
+echo         真正把这次考试做完并交上去（覆盖率达标才交）
+echo.
+echo     [0] 返回上一级
+echo  ================================================================
+echo.
+set "EXAMOPT="
+set /p "EXAMOPT=请输入编号后回车: "
+if "%EXAMOPT%"=="0" goto MENU
+if "%EXAMOPT%"=="1" (
+    set "EXAM_ARG=--exam-only"
+    goto EXAM_RUN
+)
+if "%EXAMOPT%"=="2" (
+    set "EXAM_ARG=--exam-only --exam-take"
+    goto EXAM_RUN
+)
+if "%EXAMOPT%"=="3" (
+    set "EXAM_ARG=--exam-only --exam-take --exam-submit"
+    goto CONFIRM_SUBMIT
+)
+echo.
+echo  输入无效，请重新选择。
+pause >nul
+goto PICK_EXAM
+
+:CONFIRM_SUBMIT
+cls
+echo.
+echo  ================================================================
+echo    ！ 即将自动交卷 ！
+echo  ================================================================
+echo     程序会代替你进入考场、自动答题，并在答完后自动交卷。
+echo.
+echo     请确认：
+echo       1. 这场考试你可以接受由程序打分（答错没人帮你改）
+echo       2. 考试通常只有一次机会，进考场就开始计时
+echo       3. 强烈建议先用上面第 [2] 项跑一场，确认效果再开这个
+echo.
+echo     如果只是想让它替你答题、你自己交卷，请回上一级选 [2]。
+echo  ================================================================
+echo.
+set "SURE="
+set /p "SURE=确认要自动交卷吗？输入 YES 继续（其它任意输入返回）: "
+if /i not "%SURE%"=="YES" goto PICK_EXAM
+
+:EXAM_RUN
 call :PICK_COURSE
 echo.
 echo  ----------------------------------------------------------------
-echo   ^>^>^> 考试模式启动（只读：列出考试、状态、截止时间、能否开考）
+echo   ^>^>^> 考试模式启动（%EXAM_ARG%）
 echo  ----------------------------------------------------------------
 echo.
-"%EXE%" -c "%CFG%" --exam-only %COURSE_ARG%
+"%EXE%" -c "%CFG%" %EXAM_ARG% %COURSE_ARG%
 goto DONE
 
 

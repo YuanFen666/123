@@ -113,6 +113,16 @@ def parse_args():
         action="store_true",
         help="只运行考试看板与就绪体检（只读），不进行刷课",
     )
+    parser.add_argument(
+        "--exam-take",
+        action="store_true",
+        help="【危险】进入考场自动答题（默认逐题保存但不交卷；配合 --exam-submit 才自动交卷）",
+    )
+    parser.add_argument(
+        "--exam-submit",
+        action="store_true",
+        help="【危险】自动交卷（需与 --exam-take 同用；覆盖率达标才会交）",
+    )
 
     # 在解析之前捕获 -h 的行为
     if len(sys.argv) == 2 and sys.argv[1] in {"-h", "--help"}:
@@ -217,7 +227,52 @@ def init_config():
     common_config["_list_courses"] = bool(getattr(args, "list_courses", False))
     common_config["_exam_only"] = bool(getattr(args, "exam_only", False))
     common_config["_all_courses"] = bool(getattr(args, "all_courses", False))
+    common_config["_exam_take"] = bool(getattr(args, "exam_take", False))
+    common_config["_exam_submit"] = bool(getattr(args, "exam_submit", False))
     return common_config, tiku_config, notification_config
+
+
+def take_exams(watch, exams, courses, tiku, auto_submit: bool) -> None:
+    """
+    对「体检通过、现在能考」的考试执行自动作答。
+
+    安全设计（见 api/exam_take.py）：
+      - 默认逐题保存但**不交卷**，由你自己核对后手动交；
+      - 服务器上已有答案的题默认跳过，不覆盖；
+      - 开考后任何异常都会反复提示「请立即手动完成考试」。
+    """
+    from api.exam_take import ExamTaker, ExamAborted
+
+    by_course = {c.get("courseId"): c for c in (courses or [])}
+    todo = [e for e in (exams or []) if e.todo and e.exam_id]
+    if not todo:
+        logger.info("没有需要作答的考试。")
+        return
+
+    # 二次确认：这是不可逆操作（考试通常只有一次机会）
+    logger.warning("=" * 90)
+    logger.warning("即将进入考场自动作答：{} 场；交卷方式：{}".format(
+        len(todo), "程序自动交卷" if auto_submit else "只保存答案，由你自己交卷"))
+    logger.warning("=" * 90)
+
+    ready = getattr(watch, "last_ready", None) or {}
+    for e in todo:
+        r = ready.get(e.exam_id)
+        if r is not None and not r.can_start:
+            logger.warning("跳过《{}》：{}".format(e.name, r.reason or "就绪体检未通过"))
+            continue
+        course = by_course.get(e.course_id)
+        if not course:
+            logger.warning("跳过《{}》：找不到对应课程信息".format(e.name))
+            continue
+        taker = ExamTaker(course, e, tiku, auto_submit=auto_submit)
+        try:
+            taker.run()
+        except ExamAborted as ex:
+            # 还没开考就失败 —— 没有消耗考试机会
+            logger.warning("《{}》未进入考场（未消耗机会）：{}".format(e.name, ex))
+        except Exception as ex:  # noqa: BLE001
+            logger.error("《{}》作答过程出错：{}: {}".format(e.name, type(ex).__name__, ex))
 
 
 def init_chaoxing(common_config, tiku_config):
@@ -617,6 +672,8 @@ def main():
 
         # 考试看板（只读：只列出考试和截止时间，绝不进考场、绝不提交）
         # 失败也只记一条警告，绝不影响刷课主流程
+        _exams = []
+        _watch = None
         if str_to_bool(common_config.get("exam_watch", True)):
             try:
                 from api.exam import ExamWatch
@@ -624,13 +681,19 @@ def main():
                     warn_hours = float(common_config.get("exam_warn_hours") or 48)
                 except (TypeError, ValueError):
                     warn_hours = 48.0
-                ExamWatch(notification, warn_hours=warn_hours).run(course_task or all_course)
+                _watch = ExamWatch(notification, warn_hours=warn_hours)
+                _exams = _watch.run(course_task or all_course)
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"考试看板执行失败（不影响刷课）: {type(e).__name__}: {e}")
 
-        # --- 考试模式：看完考试看板就结束，不刷课 ---
+        # --- 考试模式 ---
         if common_config.get("_exam_only"):
-            logger.info("考试模式：只做考试看板与就绪体检（只读），不进行刷课。")
+            if common_config.get("_exam_take"):
+                logger.info("考试模式：进入考场自动作答。")
+                take_exams(_watch, _exams, course_task or all_course, chaoxing.tiku,
+                           auto_submit=bool(common_config.get("_exam_submit")))
+            else:
+                logger.info("考试模式：只做考试看板与就绪体检（只读），不进入考场。")
             return
 
         # 开始学习

@@ -169,6 +169,7 @@ class ExamWatch:
         self.notification = notification
         self.warn_hours = float(warn_hours or DEFAULT_WARN_HOURS)
         self.state_file = state_file
+        self.last_ready: Dict[str, "ExamReady"] = {}   # 最近一次 run() 的就绪体检结果
 
     # ---------------- 读取 ----------------
     def fetch(self, courses: List[dict]) -> List[ExamInfo]:
@@ -375,6 +376,7 @@ class ExamWatch:
 
     # ---------------- 入口 ----------------
     def run(self, courses: List[dict], probe: bool = True) -> List[ExamInfo]:
+        self.last_ready = {}
         exams = self.fetch(courses)
 
         # 就绪体检：对「待做」的考试读一次封面页，看能不能考、卡在哪
@@ -391,6 +393,7 @@ class ExamWatch:
                     ready[e.exam_id] = self.probe(course, e)
                 except Exception as ex:  # noqa: BLE001
                     logger.debug("考试体检失败 {} -> {}: {}".format(e.name, type(ex).__name__, ex))
+        self.last_ready = ready
 
         report = self.render(exams, ready)
 
