@@ -46,6 +46,18 @@ EXAM_SHEET = "https://mooc1-api.chaoxing.com/exam-ans/exam/phone/loadAnswerStati
 EXAM_FETCH = "https://mooc1-api.chaoxing.com/exam-ans/exam/test/reVersionTestStartNew"
 EXAM_SUBMIT = "https://mooc1.chaoxing.com/exam-ans/exam/test/reVersionSubmitTestNew"
 
+# ---- 整卷模式（mooc2 网页版）----
+# 【实测】有些考试（例如中华文化才艺）的客户端就是「整卷模式」：一页展示全部题目，
+# 保存走 preview-save，且表单里必须有 paperId / examCreateUserId / examRelationId /
+# answerMode / view / feedbackEnc。用手机单题模式的 reVersionSubmitTestNew 去打它，
+# 服务端一律回 {"status":"error","msg":"提交失败：无效操作"}。
+# 参考实现（CxKitty）只实现了单题模式，所以这套字段是从真实抓包里对出来的。
+EXAM_PREVIEW_SAVE = "https://mooc1.chaoxing.com/exam-ans/exam/test/preview-save"
+EXAM_MOOC2_PREVIEW = "https://mooc1.chaoxing.com/exam-ans/mooc2/exam/preview"
+# 整卷模式的签名参数里还有一堆固定为 undefined 的占位
+_PREVIEW_SIGN_PLACEHOLDERS = ("_signcode", "_signc", "_signe", "_signk",
+                              "_cxcid", "_cxtime", "_signt")
+
 CAPTCHA_CONF = "https://captcha.chaoxing.com/captcha/get/conf"
 CAPTCHA_IMAGE = "https://captcha.chaoxing.com/captcha/get/verification/image"
 CAPTCHA_CHECK = "https://captcha.chaoxing.com/captcha/check/verification/result"
@@ -84,6 +96,21 @@ def exam_headers() -> dict:
         "(@Kalimdor)_{}".format(get_imei()),
     ))
     return {"User-Agent": ua, "X-Requested-With": "com.chaoxing.mobile"}
+
+
+def web_headers(referer: str = "") -> dict:
+    """整卷模式（mooc2 网页版）用的请求头：桌面 UA + XHR，实测抓包就是这样。"""
+    h = {
+        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"),
+        "X-Requested-With": "XMLHttpRequest",
+        "Origin": "https://mooc1.chaoxing.com",
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+    }
+    if referer:
+        h["Referer"] = referer
+    return h
 
 
 def tune_tiku_for_exam(tiku) -> None:
@@ -498,6 +525,11 @@ class ExamTaker:
         self.remain_time = 0
         self.last_update_time = 0
         self.started = False
+        # 整卷模式需要的东西（从开考重定向和整卷页里取）
+        self.openc = ""
+        self.paper_id = ""
+        self.exam_create_user_id = ""
+        self.statistics = {}   # 占位，避免旧代码引用
         self.stats = {"total": 0, "answered": 0, "skipped": 0, "failed": 0}
 
     # ---------------- 基础 ----------------
@@ -593,8 +625,15 @@ class ExamTaker:
         if not m:
             raise ExamAborted("开考重定向里没有 enc 参数: {}".format(loc[:160]))
         self.enc = m.group(1)
-        self.started = True
-        logger.warning("已进入考场，计时开始！")
+        # 把重定向 URL 的全部查询参数留下来 —— 整卷模式要用其中的 openc
+        try:
+            from urllib.parse import urlparse, parse_qsl
+            self.start_query = dict(parse_qsl(urlparse(loc).query))
+            self.openc = self.start_query.get("openc", "") or self.openc
+            logger.debug("开考重定向参数: {}".format(
+                {k: v for k, v in self.start_query.items() if k != "enc"}))
+        except Exception:  # noqa: BLE001
+            self.start_query = {}
         first = self.fetch(0)   # 第一题会把 enc/剩余时间刷新出来
 
         # 【保险】真开考的考试一定带计时。如果取完第一题计时参数还是 0，
@@ -606,6 +645,21 @@ class ExamTaker:
                 "说明考试没有真正开始。已停止，避免继续发无效提交。")
         logger.info("考试计时: 剩余 {} 秒（encRemainTime={}）, encLastUpdateTime={}".format(
             self.remain_time, self.enc_remain_time, self.last_update_time))
+
+        # 【优先走整卷模式】实测目标考试的客户端就是整卷模式（preview-save + paperId），
+        # 用手机单题模式的 reVersionSubmitTestNew 打它会一律回「无效操作」。
+        try:
+            questions = self.open_preview()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("整卷模式拉取失败（{}: {}），回退单题模式".format(type(e).__name__, e))
+            questions = []
+        if questions and self.paper_id:
+            return self._run_preview(questions)
+        if questions:
+            logger.warning("整卷模式没解析出 paperId —— 若接下来保存仍报「无效操作」，"
+                           "就是缺这个字段，请把日志发我")
+        else:
+            logger.info("改用单题模式作答")
         return first
 
     # ---------------- 4. 取题 ----------------
@@ -811,6 +865,135 @@ class ExamTaker:
         return True
 
     # ---------------- 8. 主流程 ----------------
+    # ---------------- 整卷模式（mooc2 网页版）----------------
+    def preview_url(self) -> str:
+        """整卷页 URL（也用来当提交时的 Referer）。"""
+        from urllib.parse import urlencode
+        return EXAM_MOOC2_PREVIEW + "?" + urlencode({
+            "courseId": self.course_id, "classId": self.class_id, "start": 0, "cpi": self.cpi,
+            "examRelationId": self.exam_id, "examRelationAnswerId": self.exam_answer_id,
+            "newMooc": "true", "openc": self.openc, "monitorStatus": 0, "monitorOp": -1,
+            "remainTimeParam": self.enc_remain_time,
+            "relationAnswerLastUpdateTime": self.last_update_time, "enc": self.enc,
+        })
+
+    def open_preview(self) -> List[ExamQuestion]:
+        """拉整卷页面，解析 paperId / examCreateUserId / 全部题目。"""
+        r = self.session.get(self.preview_url(), headers=web_headers(self.preview_url()), timeout=25)
+        soup = BeautifulSoup(r.text, "lxml")
+
+        def pick(*names):
+            for nm in names:
+                for sel in ("input#{}".format(nm), "input[name='{}']".format(nm),
+                            "input[name=\"{}\"]".format(nm)):
+                    node = soup.select_one(sel)
+                    if node is not None and (node.get("value") or "").strip():
+                        return node["value"].strip()
+            # 实在找不到就从整页 HTML 里正则捞（页面里常写在 JS 变量里）
+            for nm in names:
+                m = re.search(nm + r"['\"]?\s*[:=]\s*['\"]?(\d+)", r.text)
+                if m:
+                    return m.group(1)
+            return ""
+
+        self.paper_id = pick("paperId", "paperid", "testPaperId2")
+        self.exam_create_user_id = pick("examCreateUserId", "createUserId", "examCreateUserid")
+        rid = pick("testUserRelationId", "examRelationAnswerId")
+        if rid:
+            self.exam_answer_id = rid
+        for key, attr in (("enc", "enc"), ("enc_remain_time", "encRemainTime"),
+                          ("remain_time", "remainTime"), ("last_update_time", "encLastUpdateTime")):
+            node = soup.select_one("input#{}".format(attr))
+            if node is not None:
+                try:
+                    setattr(self, key, int(node["value"]) if key != "enc" else node["value"])
+                except (TypeError, ValueError):
+                    pass
+        nodes = soup.select("div.questionWrap.singleQuesId.ans-cc-exam")
+        if not nodes:
+            nodes = soup.select("div.ans-cc-exam")
+        questions = [parse_question(n, i) for i, n in enumerate(nodes)]
+        logger.info("整卷模式：解析到 {} 题；paperId={} examCreateUserId={} openc={}".format(
+            len(questions), self.paper_id or "(没找到)", self.exam_create_user_id or "(没找到)",
+            self.openc or "(空)"))
+        return questions
+
+    def save_preview(self, index: int, q: Optional[ExamQuestion], final: bool = False) -> dict:
+        qid = q.id if q else 0
+        params = {
+            "classId": self.class_id, "courseId": self.course_id, "cpi": self.cpi,
+            "testPaperId": self.exam_id, "testUserRelationId": self.exam_answer_id,
+            "tempSave": "false" if final else "true",
+            **get_exam_signature(self._uid(), qid, random.randint(100, 1000), random.randint(100, 1000)),
+            "qid": qid, "version": 1, "view": "json", "_csign": 0,
+        }
+        for k in _PREVIEW_SIGN_PLACEHOLDERS:
+            params[k] = "undefined"
+        data = {
+            "answerMode": 1, "courseId": self.course_id, "paperId": self.paper_id,
+            "testPaperId": self.exam_id, "examCreateUserId": self.exam_create_user_id,
+            "feedbackEnc": "", "testUserRelationId": self.exam_answer_id,
+            "classId": self.class_id, "type": 0, "remainTime": self.remain_time,
+            "tempSave": "false" if final else "true", "timeOver": "false",
+            "encRemainTime": self.enc_remain_time, "encLastUpdateTime": self.last_update_time,
+            "enc": self.enc, "userId": self._uid(), "cpi": self.cpi,
+            "examRelationId": self.exam_id, "enterPageTime": self.last_update_time,
+            "exitdtime": 0, "monitorforcesubmit": 0,
+        }
+        if q is not None:
+            data.update(self._answer_form(q))
+            data["start"] = index
+        r = self.session.post(EXAM_PREVIEW_SAVE, params=params, data=data,
+                              headers=web_headers(self.preview_url()), timeout=25)
+        r.raise_for_status()
+        try:
+            js = r.json()
+        except Exception:  # noqa: BLE001
+            raise RuntimeError("整卷保存返回非 JSON：{}".format(r.text[:200]))
+        if str(js.get("status", "")).lower() != "success" and js.get("status") is not True:
+            raise RuntimeError("整卷保存失败：{}".format(str(js)[:200]))
+        return js
+
+    def _run_preview(self, questions: List[ExamQuestion]) -> dict:
+        """整卷模式下的作答主循环（客户端就是这么存的）。"""
+        answered = skipped = failed = 0
+        for i, q in enumerate(questions):
+            if self.overwrite is False and (q.old_answer or "").strip():
+                logger.info("第 {} 题已有答案（{}），跳过不覆盖".format(i, q.old_answer))
+                skipped += 1
+                continue
+            logger.info("第 {} 题 [{}] {}".format(i, q.type_name, q.title[:60]))
+            if not self.fill(q):
+                failed += 1
+                continue
+            try:
+                self.save_preview(i, q, final=False)
+                answered += 1
+                logger.info("  已作答并保存 -> {}".format(q.old_answer))
+            except Exception as e:  # noqa: BLE001
+                failed += 1
+                logger.error("  第 {} 题保存失败 -> {}: {}".format(i, type(e).__name__, e))
+                if "无效操作" in str(e):
+                    logger.error("服务端仍回「无效操作」，已停止（请把日志发我）")
+                    break
+        self.stats.update(total=len(questions), answered=answered, skipped=skipped, failed=failed)
+        cover = (answered + skipped) / len(questions) if questions else 0.0
+        logger.info("整卷模式作答：保存 {}，跳过 {}，未答 {}；覆盖率 {:.0%}".format(
+            answered, skipped, failed, cover))
+        if not self.auto_submit:
+            logger.warning("【未交卷】答案已逐题保存。请到手机/网页核对后自己点交卷。")
+            return self.stats
+        if cover < self.min_cover:
+            logger.error("覆盖率 {:.0%} 低于门槛 {:.0%}，不自动交卷。".format(cover, self.min_cover))
+            return self.stats
+        try:
+            self.save_preview(0, None, final=True)
+            logger.warning("【已自动交卷】{}".format(self.title))
+        except Exception as e:  # noqa: BLE001
+            logger.error("自动交卷失败 -> {}（请手动交卷）".format(e))
+        return self.stats
+
+    # ---------------- 单题模式回退 ----------------
     def run(self) -> dict:
         logger.info("=" * 90)
         logger.info("考试作答：{}（{}）".format(self.title, self.exam_id))

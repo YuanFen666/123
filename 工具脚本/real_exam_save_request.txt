@@ -1,0 +1,68 @@
+真实客户端抓包（2026-09-11，用户浏览器 F12 抓取，已脱敏 cookie）
+================================================================
+考试：中华文化才艺（examId=10755325, examAnswerId=171393570, paperId=560833645）
+模式：**整卷模式**（mooc2 网页版 /exam-ans/mooc2/exam/preview），
+      不是我们一直用的手机单题模式。
+
+POST https://mooc1.chaoxing.com/exam-ans/exam/test/preview-save
+  查询参数：
+    classId=152328990
+    courseId=266218735
+    cpi=500640783
+    testPaperId=10755325
+    testUserRelationId=171393570
+    tempSave=true
+    pos=621b5eb9e551f1600c68044b6946      <- 签名
+    rd=0.7720510136224819                 <- 签名
+    value=(452|1097)                      <- 签名
+    qid=887013475
+    _edt=1789139965328231                 <- 签名
+    version=1
+    view=json                             <- 我们没有
+    _csign=0 / _signcode=undefined / _signc=undefined / _signe=undefined
+    _signk=undefined / _cxcid=undefined / _cxtime=undefined / _signt=undefined
+
+  表单 body：
+    answerMode=1                          <- 我们没有
+    courseId=266218735
+    paperId=560833645                     <- 我们没有（关键）
+    testPaperId=10755325
+    examCreateUserId=570630900            <- 我们没有（关键）
+    feedbackEnc=                          <- 我们没有
+    testUserRelationId=171393570
+    classId=152328990
+    type=0
+    remainTime=5411
+    tempSave=true
+    timeOver=false
+    encRemainTime=6032
+    encLastUpdateTime=1789139344096
+    enc=fe608045699e9fc628f76a75f2e534c3
+    userId=416780389
+    cpi=500640783
+    examRelationId=10755325               <- 我们没有
+    enterPageTime=1789139344208
+    exitdtime=0
+    monitorforcesubmit=0
+    type887013475=0
+    typeName887013475=单选题
+    answer887013475=A                      <- 单选字段名与单题模式一致
+    questionId=887013475
+    start=3
+
+  请求头（关键项）：
+    Content-Type: application/x-www-form-urlencoded; charset=UTF-8
+    Origin:  https://mooc1.chaoxing.com
+    Referer: https://mooc1.chaoxing.com/exam-ans/mooc2/exam/preview
+             ?courseId=266218735&classId=152328990&start=0&cpi=500640783
+             &examRelationId=10755325&examRelationAnswerId=171393570
+             &newMooc=true&openc=0db83d1385b675201fc5f7527b80a8c4
+             &monitorStatus=0&monitorOp=-1&remainTimeParam=6032
+             &relationAnswerLastUpdateTime=1789139344096&enc=fe608045699e9fc628f76a75f2e534c3
+    User-Agent: 桌面 Chrome（说明整卷模式**不需要**手机 UA）
+    X-Requested-With: XMLHttpRequest
+
+对比：我们之前用的是手机单题模式
+    POST https://mooc1.chaoxing.com/exam-ans/exam/test/reVersionSubmitTestNew
+    缺 paperId / examCreateUserId / examRelationId / answerMode / view / feedbackEnc
+    -> 服务端一律回 {"status":"error","msg":"提交失败：无效操作"}
