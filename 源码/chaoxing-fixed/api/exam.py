@@ -42,6 +42,8 @@ from api.logger import logger
 
 # 课程考试列表（手机端 SSR 页面，纯只读）
 EXAM_LIST_URL = "https://mooc1-api.chaoxing.com/exam/phone/task-list"
+# 考试封面页：读它能知道「这场考试现在能不能考、卡在哪、要不要人脸/验证码/监控」
+EXAM_COVER_URL = "https://mooc1-api.chaoxing.com/exam-ans/exam/phone/task-exam"
 
 # 去重状态文件：避免同一场考试每次运行都推送
 EXAM_STATE_FILE = "exam_state.json"
@@ -90,6 +92,38 @@ class ExamInfo:
     def line(self) -> str:
         return "  [{}] {:<24} 状态: {:<8} 截止: {}".format(
             self.course_title[:14], self.name[:24], self.status, self.remain_human)
+
+
+@dataclass
+class ExamReady:
+    """考试体检结果（只读探测封面页得到）。"""
+    exam_id: str
+    can_start: bool = False          # 现在能不能进考场
+    reason: str = ""                 # 不能考的原因（优先用服务端原话）
+    title: str = ""
+    relation_id: str = ""
+    need_face: bool = False          # needFaceRecognition / faceRecognitionCompare
+    need_captcha: bool = False       # captchaCheck
+    need_code: bool = False          # 邀请码 needcode
+    monitor: bool = False            # 切屏/锁屏/截屏监控
+    duration: str = ""
+    question_count: str = ""
+
+    def line(self) -> str:
+        marks = []
+        marks.append("人脸识别" if self.need_face else "无需人脸")
+        if self.need_captcha:
+            marks.append("需要验证码")
+        if self.need_code:
+            marks.append("需要邀请码")
+        if self.monitor:
+            marks.append("有屏幕监控")
+        head = "✓ 可以考试" if self.can_start else "✗ 暂时不能考"
+        tail = "；".join(marks)
+        s = "      就绪: {}（{}）".format(head, tail)
+        if not self.can_start and self.reason:
+            s += "\n            原因: {}".format(self.reason)
+        return s
 
 
 def parse_remain_hours(text: str) -> Optional[float]:
@@ -189,8 +223,94 @@ class ExamWatch:
             ))
         return out
 
+    # ---------------- 就绪体检 ----------------
+    def probe(self, course: dict, exam: ExamInfo, uid: str = "") -> Optional[ExamReady]:
+        """
+        探测考试封面页，回答「这场考试现在能不能考、卡在哪、要不要人脸/验证码/监控」。
+
+        【安全边界】只发 GET；**不带** redo=1 / examsignal=1（那两个参数会强制跳过
+        「重新作答」重定向和考试承诺书，可能影响考试状态）；allow_redirects=False，
+        绝不跟随跳转进考场；也绝不调用 phone/start（那才是真正开考、开始计时的地方）。
+        """
+        from api.base import SessionManager
+        session = SessionManager.get_session()
+        if not uid:
+            uid = session.cookies.get("_uid") or ""
+        params = {
+            "taskrefId": exam.exam_id,
+            "courseId": course.get("courseId"),
+            "classId": course.get("clazzId"),
+            "userId": uid,
+            "role": "",
+            "source": 0,
+            "enc_task": exam.enc_task,
+            "cpi": course.get("cpi"),
+            "vx": 0,
+        }
+        try:
+            resp = session.get(EXAM_COVER_URL, params=params, timeout=20, allow_redirects=False)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("考试体检：{} 请求失败 -> {}: {}".format(exam.name, type(e).__name__, e))
+            return None
+
+        if resp.status_code in (301, 302, 303, 307, 308):
+            loc = resp.headers.get("Location", "")
+            r = ExamReady(exam_id=exam.exam_id, can_start=False)
+            if "/exam-ans/exam/phone/look" in loc:
+                r.reason = "这场考试已经交过卷了（服务端跳转到成绩页）"
+            else:
+                r.reason = "服务端跳转到了 {}（未跟随跳转，避免误入考场）".format(loc[:80])
+            return r
+        if resp.status_code != 200:
+            return ExamReady(exam_id=exam.exam_id, can_start=False,
+                             reason="封面页返回 HTTP {}".format(resp.status_code))
+
+        return self._parse_cover(exam, resp.text)
+
+    @staticmethod
+    def _parse_cover(exam: ExamInfo, html: str) -> ExamReady:
+        soup = BeautifulSoup(html, "lxml")
+        r = ExamReady(exam_id=exam.exam_id)
+
+        # 1) 被门槛拦住时，服务端会把原因放在 h2 里
+        h2 = soup.find("h2")
+        blocked = h2.get_text(strip=True) if h2 else ""
+
+        # 2) 各种开关字段（实测 2026-09 的字段名）
+        def val(sel):
+            node = soup.select_one(sel)
+            return (node.get("value") or "").strip() if node and node.has_attr("value") else ""
+
+        face = val("input#needFaceRecognition") or val("input#faceRecognitionCompare")
+        r.need_face = face not in ("", "0", "false", "False")
+        r.need_captcha = val("input#captchaCheck") not in ("", "0")
+        r.relation_id = val("input#testUserRelationId")
+        r.monitor = any(val(s) not in ("", "0") for s in
+                        ("input#monitorLock", "input#screenMonitor", "input#screenshotNumberLimit"))
+        t = soup.select_one("span.overHidden2")
+        r.title = t.get_text(strip=True) if t else exam.name
+
+        # 3) 邀请码写在页面脚本里
+        js = soup.body.find("script").text if (soup.body and soup.body.find("script")) else ""
+        m = re.search(r"var\s+needcode\s*=\s*(\d+)", js or "")
+        r.need_code = bool(m and m.group(1) != "0")
+        m = re.search(r"var\s+limitmin\s*=\s*(\d+)", js or "")
+        if m:
+            r.duration = m.group(1) + " 分钟"
+
+        # 4) 判定能不能考
+        if blocked:
+            r.can_start = False
+            r.reason = blocked
+        elif r.relation_id:
+            r.can_start = True
+        else:
+            r.can_start = False
+            r.reason = "封面页没解析出考试信息（可能页面结构变了，或这场考试不可考）"
+        return r
+
     # ---------------- 输出 ----------------
-    def render(self, exams: List[ExamInfo]) -> str:
+    def render(self, exams: List[ExamInfo], ready: Optional[dict] = None) -> str:
         todo = [e for e in exams if e.todo]
         done = [e for e in exams if e.done]
         lines = ["", "=" * 92,
@@ -203,6 +323,8 @@ class ExamWatch:
                 lines.append(" 【待完成 {} 场】".format(len(todo)))
                 for e in sorted(todo, key=lambda x: (x.remain_hours is None, x.remain_hours or 0)):
                     lines.append(e.line())
+                    if ready and e.exam_id in ready and ready[e.exam_id] is not None:
+                        lines.append(ready[e.exam_id].line())
                     if e.remain_hours is not None and e.remain_hours <= self.warn_hours:
                         lines.append("      ⚠ 距截止不足 {:.0f} 小时，抓紧".format(self.warn_hours))
             if done:
@@ -250,9 +372,25 @@ class ExamWatch:
         return changed
 
     # ---------------- 入口 ----------------
-    def run(self, courses: List[dict]) -> List[ExamInfo]:
+    def run(self, courses: List[dict], probe: bool = True) -> List[ExamInfo]:
         exams = self.fetch(courses)
-        report = self.render(exams)
+
+        # 就绪体检：对「待做」的考试读一次封面页，看能不能考、卡在哪
+        ready = {}
+        if probe:
+            by_id = {c.get("courseId"): c for c in (courses or [])}
+            for e in exams:
+                if not e.todo or not e.exam_id:
+                    continue
+                course = by_id.get(e.course_id)
+                if not course:
+                    continue
+                try:
+                    ready[e.exam_id] = self.probe(course, e)
+                except Exception as ex:  # noqa: BLE001
+                    logger.debug("考试体检失败 {} -> {}: {}".format(e.name, type(ex).__name__, ex))
+
+        report = self.render(exams, ready)
 
         # 控制台 + 日志都要显眼
         for ln in report.splitlines():
@@ -261,9 +399,15 @@ class ExamWatch:
         todo = [e for e in exams if e.todo]
         if todo and self.notification is not None and self._need_notify(exams):
             try:
-                self.notification.send("chaoxing 考试提醒\n" + "\n".join(
-                    "{}({}): {} {}".format(e.course_title, e.name, e.status, e.remain_text)
-                    for e in todo))
+                lines = []
+                for e in todo:
+                    lines.append("{}({}): {} {}".format(e.course_title, e.name, e.status, e.remain_text))
+                    r = ready.get(e.exam_id)
+                    if r is not None:
+                        lines.append("    就绪: {} {}".format(
+                            "可以考试" if r.can_start else "暂时不能考 " + (r.reason or ""),
+                            "（需要验证码）" if r.need_captcha else ""))
+                self.notification.send("chaoxing 考试提醒\n" + "\n".join(lines))
             except Exception as e:  # noqa: BLE001
                 logger.debug("考试看板：通知推送失败 -> {}".format(e))
         return exams

@@ -42,6 +42,37 @@ DONE_LI = """<ul class="nav">
 </li>
 </ul>"""
 
+# ---- 以下是「考试体检」用的封面页夹具，字段与标签来自实测页面（2026-09-11）----
+# 正常可考封面页：不需要人脸、无屏幕监控，但需要验证码
+COVER_OK = """<html><body>
+<span class="overHidden2">中华文化才艺</span>
+<input type="hidden" id="needFaceRecognition" value="0"/>
+<input type="hidden" id="faceRecognitionCompare" name="faceRecognitionCompare" value=""/>
+<input type="hidden" id="captchaCheck" value="1"/>
+<input type="hidden" id="captchaCaptchaId" value="TEST_CAPTCHA_ID"/>
+<input type="hidden" id="monitorLock" value="0"/>
+<input type="hidden" id="screenMonitor" value=""/>
+<input type="hidden" id="screenshotNumberLimit" value="0"/>
+<input type="hidden" id="testUserRelationId" name="testUserRelationId" value="171393570"/>
+<input type="hidden" id="isStartPage" value="1"/>
+<script>var needcode = 0; var limitmin = 60;</script>
+</body></html>"""
+
+# 被门槛拦住的封面页（实测原话）
+COVER_BLOCKED = """<html><body>
+<h2 class="color6 fs36 textCenter marBom60 line64">该考试教师已设置章节任务点未完成90%，不能参加考试</h2>
+</body></html>"""
+
+# 构造一个「人脸识别 + 屏幕监控 + 邀请码全开」的页面，验证检出能力
+COVER_STRICT = """<html><body>
+<span class="overHidden2">严格监考示例</span>
+<input type="hidden" id="needFaceRecognition" value="1"/>
+<input type="hidden" id="captchaCheck" value="0"/>
+<input type="hidden" id="monitorLock" value="1"/>
+<input type="hidden" id="testUserRelationId" value="999"/>
+<script>var needcode = 1;</script>
+</body></html>"""
+
 
 class FakeResp:
     def __init__(self, text, status=200):
@@ -181,6 +212,40 @@ def main():
     ok = ("考试看板" in text and "待完成 1 场" in text and "已完成 1 场" in text
           and "不会替你进考场" in text)
     results.append(report("看板文本渲染（含待完成/已完成/免责说明）", ok))
+
+    # ---- 8) 就绪体检：正常可考封面页 ----
+    from api.exam import ExamWatch as EW
+    r = EW._parse_cover(todo_exam[0], COVER_OK)
+    ok = (r.can_start and not r.need_face and r.need_captcha and not r.monitor
+          and not r.need_code and r.relation_id == "171393570" and r.title == "中华文化才艺"
+          and r.duration == "60 分钟")
+    results.append(report("体检-正常封面：可考 / 无人脸 / 需验证码 / 无监控", ok,
+                          "  can_start={} face={} captcha={} monitor={} code={} rel={}".format(
+                              r.can_start, r.need_face, r.need_captcha, r.monitor, r.need_code, r.relation_id)))
+
+    # ---- 9) 就绪体检：被章节任务点门槛拦住 ----
+    r = EW._parse_cover(todo_exam[0], COVER_BLOCKED)
+    ok = ((not r.can_start) and "章节任务点未完成90%" in r.reason)
+    results.append(report("体检-被门槛拦住：不可考，且原因用服务端原话", ok,
+                          "  reason={!r}".format(r.reason)))
+
+    # ---- 10) 就绪体检：严格监考页面的检出能力 ----
+    r = EW._parse_cover(todo_exam[0], COVER_STRICT)
+    ok = (r.need_face and r.monitor and r.need_code and r.can_start)
+    results.append(report("体检-严格监考：能检出人脸/监控/邀请码", ok,
+                          "  face={} monitor={} code={}".format(r.need_face, r.monitor, r.need_code)))
+
+    # ---- 11) 就绪体检：空页面不崩 ----
+    r = EW._parse_cover(todo_exam[0], "")
+    ok = bool((not r.can_start) and r.reason)
+    results.append(report("体检-空封面页：不可考且给出原因（不崩）", ok, "  reason={!r}".format(r.reason[:40])))
+
+    # ---- 12) 就绪行渲染 ----
+    line = EW._parse_cover(todo_exam[0], COVER_OK).line()
+    ok = ("✓ 可以考试" in line and "无需人脸" in line and "需要验证码" in line)
+    results.append(report("体检-就绪行文本渲染", ok))
+    print("        " + line.replace("\n", "\n        "))
+
     print("\n".join("        " + l for l in text.splitlines()[:8]))
 
     for f in os.listdir(tmpdir):
