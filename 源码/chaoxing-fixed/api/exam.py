@@ -118,7 +118,9 @@ class ExamReady:
             marks.append("需要邀请码")
         if self.monitor:
             marks.append("有屏幕监控")
-        head = "✓ 可以考试" if self.can_start else "✗ 暂时不能考"
+        # 用 √ / × 而不是 ✓ / ✗：后两个不在 GBK 里，Windows 控制台（cp936）
+        # 打出来会变成 \u2713 这种转义，很难看。
+        head = "√ 可以考试" if self.can_start else "× 暂时不能考"
         tail = "；".join(marks)
         s = "      就绪: {}（{}）".format(head, tail)
         if not self.can_start and self.reason:
@@ -326,7 +328,7 @@ class ExamWatch:
                     if ready and e.exam_id in ready and ready[e.exam_id] is not None:
                         lines.append(ready[e.exam_id].line())
                     if e.remain_hours is not None and e.remain_hours <= self.warn_hours:
-                        lines.append("      ⚠ 距截止不足 {:.0f} 小时，抓紧".format(self.warn_hours))
+                        lines.append("      【注意】距截止不足 {:.0f} 小时，抓紧".format(self.warn_hours))
             if done:
                 lines.append(" 【已完成 {} 场】".format(len(done)))
                 for e in done:

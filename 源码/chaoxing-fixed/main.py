@@ -80,10 +80,10 @@ def parse_args():
         "-l", "--list", type=str, default=None, help="要学习的课程ID列表, 以 , 分隔"
     )
     parser.add_argument(
-        "-s", "--speed", type=float, default=1.0, help="视频播放倍速 (默认1, 最大2)"
+        "-s", "--speed", type=float, default=None, help="视频播放倍速 (默认1, 最大2)"
     )
     parser.add_argument(
-        "-j", "--jobs", type=int, default=4, help="同时进行的章节数 (默认4, 如果一个章节有多个任务点，不会限制同时处理任务点的数量)"
+        "-j", "--jobs", type=int, default=None, help="同时进行的章节数 (默认4, 如果一个章节有多个任务点，不会限制同时处理任务点的数量)"
     )
 
     parser.add_argument(
@@ -94,9 +94,24 @@ def parse_args():
         help="启用调试模式, 输出DEBUG级别日志",
     )
     parser.add_argument(
-        "-a", "--notopen-action", type=str, default="retry", 
+        "-a", "--notopen-action", type=str, default=None, 
         choices=["retry", "ask", "continue"],
         help="遇到关闭任务点时的行为: retry-重试, ask-询问, continue-继续"
+    )
+    parser.add_argument(
+        "--all-courses",
+        action="store_true",
+        help="忽略 course_list，直接处理全部课程（并且不再弹出「请手动输入课程ID」的交互提示）",
+    )
+    parser.add_argument(
+        "--list-courses",
+        action="store_true",
+        help="只登录并打印课程列表（每行 `序号|课程名|courseId`，纯文本，供启动脚本生成菜单）然后退出",
+    )
+    parser.add_argument(
+        "--exam-only",
+        action="store_true",
+        help="只运行考试看板与就绪体检（只读），不进行刷课",
     )
 
     # 在解析之前捕获 -h 的行为
@@ -163,7 +178,7 @@ def build_config_from_args(args):
         "password": args.password,
         "course_list": [item.strip() for item in args.list.split(",") if item.strip()] if args.list else None,
         "speed": args.speed if args.speed else 1.0,
-        "jobs": args.jobs,
+        "jobs": args.jobs if args.jobs else 4,
         "notopen_action": args.notopen_action if args.notopen_action else "retry"
     }
     return common_config, {}, {}
@@ -172,11 +187,37 @@ def build_config_from_args(args):
 def init_config():
     """初始化配置"""
     args = parse_args()
-    
+
     if args.config:
-        return load_config_from_file(args.config)
+        common_config, tiku_config, notification_config = load_config_from_file(args.config)
+
+        # 【重要】命令行参数覆盖配置文件。
+        # 原版走 -c 时会把命令行参数**全部忽略**（比如 -l 指定的课程列表根本不生效），
+        # 启动脚本正是靠这个把「菜单里选的课程」传进来的，所以这里必须做覆盖。
+        # 只在参数「确实传了」时才覆盖（因此上面把这些参数的 default 都改成了 None）。
+        if args.list:
+            common_config["course_list"] = [x.strip() for x in args.list.split(",") if x.strip()]
+        if args.username:
+            common_config["username"] = args.username.strip()
+        if args.password:
+            common_config["password"] = args.password.strip()
+        if args.speed:
+            common_config["speed"] = float(args.speed)
+        if args.jobs:
+            common_config["jobs"] = int(args.jobs)
+        if args.notopen_action:
+            common_config["notopen_action"] = args.notopen_action
+        if args.use_cookies:
+            common_config["use_cookies"] = True
     else:
-        return build_config_from_args(args)
+        common_config, tiku_config, notification_config = build_config_from_args(args)
+
+    # 把「只影响本次运行」的开关带上（它们不写在配置文件里）。
+    # 用下划线前缀，避免和配置文件里的键冲突。
+    common_config["_list_courses"] = bool(getattr(args, "list_courses", False))
+    common_config["_exam_only"] = bool(getattr(args, "exam_only", False))
+    common_config["_all_courses"] = bool(getattr(args, "all_courses", False))
+    return common_config, tiku_config, notification_config
 
 
 def init_chaoxing(common_config, tiku_config):
@@ -549,6 +590,31 @@ def main():
         # 获取所有的课程列表
         all_course = chaoxing.get_course_list()
 
+        # --- 只列课程：给启动脚本生成菜单用 ---
+        # 注意用 print() 走 stdout；程序日志由 loguru 写到 stderr，
+        # 所以 stdout 是干净的纯文本，脚本可以放心按行解析。
+        if common_config.get("_list_courses"):
+            # Windows 控制台可能是 GBK(cp936)，遇到编不进去的字符（比如课程名里的 emoji）
+            # print 会抛 UnicodeEncodeError；这里降级成替换字符，绝不因为一个字符让菜单挂掉。
+            try:
+                sys.stdout.reconfigure(errors="replace")
+            except Exception:  # noqa: BLE001
+                pass
+            for _i, _c in enumerate(all_course, 1):
+                # 分隔符是 |，课程名里若含 | 或换行会破坏脚本的解析，先净化
+                _title = str(_c.get("title", "")).replace("|", "/").replace("\r", " ").replace("\n", " ")
+                print("{}|{}|{}".format(_i, _title, _c.get("courseId", "")), flush=True)
+            return
+
+        # 过滤要学习的课程（-l 指定的课程ID）
+        # 注意：原版在 course_list 为空时会「弹交互提示」让你手输课程ID。
+        # --all-courses / --exam-only 下不需要这个提示（无人值守和启动脚本会卡住），直接全选。
+        if common_config.get("_all_courses") or (common_config.get("_exam_only")
+                                                 and not common_config.get("course_list")):
+            course_task = all_course
+        else:
+            course_task = filter_courses(all_course, common_config.get("course_list"))
+
         # 考试看板（只读：只列出考试和截止时间，绝不进考场、绝不提交）
         # 失败也只记一条警告，绝不影响刷课主流程
         if str_to_bool(common_config.get("exam_watch", True)):
@@ -558,13 +624,15 @@ def main():
                     warn_hours = float(common_config.get("exam_warn_hours") or 48)
                 except (TypeError, ValueError):
                     warn_hours = 48.0
-                ExamWatch(notification, warn_hours=warn_hours).run(all_course)
+                ExamWatch(notification, warn_hours=warn_hours).run(course_task or all_course)
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"考试看板执行失败（不影响刷课）: {type(e).__name__}: {e}")
 
-        # 过滤要学习的课程
-        course_task = filter_courses(all_course, common_config.get("course_list"))
-        
+        # --- 考试模式：看完考试看板就结束，不刷课 ---
+        if common_config.get("_exam_only"):
+            logger.info("考试模式：只做考试看板与就绪体检（只读），不进行刷课。")
+            return
+
         # 开始学习
         logger.info(f"课程列表过滤完毕, 当前课程任务数量: {len(course_task)}")
         for course in course_task:

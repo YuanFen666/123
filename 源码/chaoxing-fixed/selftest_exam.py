@@ -242,8 +242,15 @@ def main():
 
     # ---- 12) 就绪行渲染 ----
     line = EW._parse_cover(todo_exam[0], COVER_OK).line()
-    ok = ("✓ 可以考试" in line and "无需人脸" in line and "需要验证码" in line)
-    results.append(report("体检-就绪行文本渲染", ok))
+    ok = ("√ 可以考试" in line and "无需人脸" in line and "需要验证码" in line)
+    # 控制台是 GBK，日志里不能出现 GBK 打不出来的符号（会显示成 \u2713 这种转义）
+    try:
+        line.encode("gbk")
+        gbk_ok = True
+    except UnicodeEncodeError:
+        gbk_ok = False
+    ok = ok and gbk_ok
+    results.append(report("体检-就绪行文本渲染（且必须是 GBK 可打印字符）", ok))
     print("        " + line.replace("\n", "\n        "))
 
     print("\n".join("        " + l for l in text.splitlines()[:8]))
