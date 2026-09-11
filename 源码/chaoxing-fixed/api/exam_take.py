@@ -993,6 +993,33 @@ class ExamTaker:
             logger.error("自动交卷失败 -> {}（请手动交卷）".format(e))
         return self.stats
 
+    # ---------------- 答案清单（保存接口不可用时的兜底产物）----------------
+    def _dump_answers(self, collected: List[tuple]) -> None:
+        """
+        把算出来的答案写成 exam_answers.md：
+           题号 | 题型 | 题干 | 选项 | 答案
+        保存接口的模式/字段一时对不上时，你可以照这份清单在浏览器里快速填。
+        """
+        if not collected:
+            return
+        lines = ["# 考试答案清单：{}".format(self.title), "",
+                 "> 由程序用题库链算出，**仅供人工核对/手动填写**。",
+                 "> 生成时间：{}".format(time.strftime("%Y-%m-%d %H:%M:%S")), ""]
+        for idx, q, ans, ok in collected:
+            lines.append("## 第 {} 题（{}）{}".format(idx + 1, q.type_name, q.title))
+            if q.options:
+                for k, v in q.options.items():
+                    mark = " ✅" if ok and k in str(ans).upper() else ""
+                    lines.append("- {} {}{}".format(k, v, mark))
+            lines.append("")
+            lines.append("**答案：{}**{}".format(ans or "(没答出来)",
+                                                "" if ok else "  ← 需要你自己判断"))
+            lines.append("")
+        path = "exam_answers.md"
+        with open(path, "w", encoding="utf8") as fp:
+            fp.write("\n".join(lines))
+        logger.warning("已把 {} 题的答案清单写成 {}（可照着在浏览器里填）".format(len(collected), path))
+
     # ---------------- 单题模式回退 ----------------
     def run(self) -> dict:
         logger.info("=" * 90)
@@ -1026,6 +1053,7 @@ class ExamTaker:
                 return self.stats
 
         answered = skipped = failed = 0
+        collected = []          # (题号, 题目, 算出的答案, 是否映射成功) —— 最后写成答案清单
         index = 0
         limit = len(all_idx) if all_idx else self.max_questions
         while index < limit:
@@ -1052,9 +1080,11 @@ class ExamTaker:
                 logger.debug("  选项: {}".format(q.options_text().replace("\n", " | ")))
             if not self.fill(q):
                 logger.warning("  题库没给出可用答案，跳过（该题留空）")
+                collected.append((index, q, "", False))
                 failed += 1
                 index += 1
                 continue
+            collected.append((index, q, q.old_answer, True))
             try:
                 self.submit(index, q, final=False)
                 answered += 1
@@ -1078,6 +1108,12 @@ class ExamTaker:
             index += 1
 
         self.stats.update(answered=answered, skipped=skipped, failed=failed)
+        # 【有用产物】不管保存成没成，把「算出来的答案」落一份清单。
+        # 保存接口的字段/模式一时对不上时，你可以照着这份清单在浏览器里快速填。
+        try:
+            self._dump_answers(collected)
+        except Exception as _e:  # noqa: BLE001
+            logger.debug("写答案清单失败 -> {}".format(_e))
         total = self.stats["total"] or (answered + failed)
         cover = (answered + skipped) / total if total else 0.0
         logger.info("=" * 90)
