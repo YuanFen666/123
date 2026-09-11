@@ -711,8 +711,30 @@ class ExamTaker:
             raise RuntimeError("提交返回的不是 JSON（HTTP {}）：{}".format(
                 r.status_code, r.text[:200]))
         if js.get("status") != "success":
-            # 【诊断】把服务端原话完整带出来，否则只看到「无效操作」没法查。
-            # 常见原因：考试没真正开始（计时参数为 0）→ 整个会话无效。
+            # 【诊断】把请求和服务端原话完整落盘，方便和浏览器里抓到的真实请求逐字段对比。
+            # 文件：程序运行目录下的 exam_submit_debug.json
+            try:
+                import os as _os
+                with open("exam_submit_debug.json", "w", encoding="utf8") as _fp:
+                    json.dump({
+                        "url": EXAM_SUBMIT,
+                        "headers": exam_headers(),
+                        "params": {k: str(v) for k, v in params.items()},
+                        "data": {k: str(v) for k, v in data.items()},
+                        "response": js,
+                        "my_state": {
+                            "exam_id": self.exam_id, "exam_answer_id": self.exam_answer_id,
+                            "class_id": self.class_id, "course_id": self.course_id,
+                            "cpi": self.cpi, "uid": self._uid(), "index": index, "qid": qid,
+                            "remain_time": self.remain_time,
+                            "enc_remain_time": self.enc_remain_time,
+                            "last_update_time": self.last_update_time,
+                            "enc": self.enc,
+                        },
+                    }, _fp, ensure_ascii=False, indent=2)
+                logger.error("已把本次提交请求写进 exam_submit_debug.json（发给我就能对比）")
+            except Exception as _e:  # noqa: BLE001
+                logger.debug("写诊断文件失败 -> {}".format(_e))
             logger.debug("提交失败响应: {}".format(str(js)[:400]))
             raise RuntimeError("提交失败：{}（第 {} 题 qid={}；服务端计时 remainTime={} "
                                "encRemainTime={}）".format(
@@ -861,12 +883,13 @@ class ExamTaker:
                     self._warn_in_progress("提交时提示时间已用完")
                     break
                 if "无效操作" in str(e):
-                    # 服务端一律回「无效操作」= 这个考试会话无效（多半是没真正开考）。
-                    # 继续把每一题都发一遍只是刷错误日志，立刻停手并告诉用户。
+                    # 实测确认：考试确实开考了（服务端计时正常），是提交请求本身被拒。
+                    # 继续把每一题都发一遍只是刷错误日志，立刻停手并留下诊断文件。
                     logger.error("=" * 90)
-                    logger.error("服务端对所有提交都回「无效操作」，说明这场考试的会话无效"
-                                 "（最常见原因：考试没有真正开始，计时参数是 0）。")
-                    logger.error("已停止提交。请到手机/网页上确认这场考试的状态。")
+                    logger.error("服务端对所有提交都回「无效操作」——考试是开着的（计时正常），")
+                    logger.error("说明是提交请求的字段和真实客户端对不上。已停止提交。")
+                    logger.error("请把程序目录下的 exam_submit_debug.json 发给我，")
+                    logger.error("我会和浏览器 F12 抓到的真实请求逐字段比对后修正。")
                     logger.error("=" * 90)
                     break
             index += 1
