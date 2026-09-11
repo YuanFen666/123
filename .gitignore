@@ -1,0 +1,23 @@
+# ============================================================
+#  含账号密码 / token，绝对不要提交
+# ============================================================
+config.ini
+config-bridge.ini
+cookies.txt
+cache.json
+anevol_token.txt
+
+# 运行日志（含账号与题目信息）
+*.log
+chaoxing.log
+
+# 打包产物与缓存
+build/
+dist/
+__pycache__/
+*.pyc
+*.exe
+*.spec.bak
+
+# 本地备份
+备份配置/

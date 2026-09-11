@@ -1,0 +1,87 @@
+﻿; ============================================================================
+;  配置模板：复制成 config.ini 再填自己的值
+;  【重要】config.ini 里含账号密码与各种 token，已经被 .gitignore 忽略，
+;          千万不要提交到公开仓库（本文件是脱敏后的模板，可以提交）。
+; ============================================================================
+
+[common]
+use_cookies=false
+username = 
+password = 
+course_list =
+speed = 1
+jobs = 8
+notopen_action = retry
+
+[tiku]
+; ============================================================
+;  已接入三道防线（修复版 exe 内置，【不需要】再开 anevol_bridge.exe）：
+;    1. TikuIcodef  网课小工具题库（GO题）https://cx.icodef.com/  免费、快（约0.3~0.8秒）
+;    2. TikuAnevol  ANEVOL 题库           https://tiku.anevol.cn/  付费、慢（约7~13秒）
+;    3. AI          大模型兜底（DeepSeek）                         最后的救命稻草
+;
+;  下面这行是「查询顺序」：从左到右依次询问，第一个查到答案的胜出，后面的不再请求。
+;  前两个题库都没答案的题（没收录 / 超时 / 服务故障 / 熔断中）会自动落到 AI 手上，
+;  由大模型给出答案，而不是像以前那样随机瞎填。
+; ============================================================
+;
+;  【关闭题库模式】provider 留空 = 不查答案、不答题，只做视频/文档任务点
+; ============================================================
+provider = TikuIcodef,TikuAnevol,AI
+
+; ---------- 网课小工具题库（GO题）----------
+; 接口地址，留空会自动用这个默认值
+icodef_url = https://cx.icodef.com/wyn-nb?v=4
+; 官方限制「1 并发」，程序内部已强制串行；这里是两次请求之间的最小间隔（秒）。
+; 实测 0.3 秒太激进：8 个 worker 同时开章节时会打出突发请求，
+; 服务端仍会返回 code=-2「触发流控限制: 1并发限制」（实测 20 次请求里 5 次中招，每次白等 2 秒）。
+; 调到 1.5 秒后突发被摊平，基本不再触发。若还偶发，可继续往上调（2、3），无需重新打包。
+icodef_min_interval = 1.5
+; 读超时（秒）
+icodef_timeout = 15
+; 可选：填了会带上 Authorization 请求头（不填=不带，公开接口够用）
+icodef_authorization = 
+
+; ---------- ANEVOL 题库 ----------
+; ANEVOL 接口地址（留空也会自动用这个默认值）
+url = https://tiku.anevol.cn/api/search
+; ANEVOL token，多个用英文逗号分隔（只用第一个）
+tokens = 
+; ANEVOL 请求最小间隔（秒），别调太小，容易被限流
+anevol_min_interval = 0.3
+
+; 达到覆盖率后自动提交（true=答完就交；false=只保存不提交）
+submit = true
+
+; 最低题库覆盖率（搜到的题占总题数的比例）
+cover_rate = 0.8
+
+; 每道题之间的间隔（秒）
+delay = 1.5
+
+; 判断题匹配规则（内置实现会把题库的判断题答案归一化成“正确/错误”）
+true_list = 正确,对,√,是
+false_list = 错误,错,×,否,不对,不正确
+
+; ---- AI 兜底（第三道防线，DeepSeek）----
+; 【必须填 key，留空的话 AI 会被自动跳过，并在日志里明确提示“AI 兜底未配置完整”】
+; 申请地址：https://platform.deepseek.com/api_keys   （充值几块钱能用很久）
+endpoint = https://api.deepseek.com/v1
+key = 
+model = deepseek-chat
+; AI 请求最小间隔（秒），防止 8 个 worker 同时答题把接口打爆
+min_interval_seconds = 3
+; 可选：需要走代理时填，例如 http://127.0.0.1:7890，不需要留空
+http_proxy =
+
+; ---- 以下为其它内置题库专用，用上面这套时全部留空 ----
+likeapi_search = false
+likeapi_model =
+siliconflow_key = 
+siliconflow_model =
+siliconflow_endpoint =
+
+[notification]
+provider = ServerChan
+url =
+tg_chat_id = XXXXXX
