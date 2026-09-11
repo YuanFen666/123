@@ -82,6 +82,9 @@ provider = TikuIcodef,TikuAnevol,AI
 - **题号预处理**：原版用 `^\d+` 去题号，会把 `"1+1等于几？"` 削成 `"+1等于几？"`、
   `"1921年..."` 削成 `"年..."`，题干变形直接搜不到。已改为「数字后必须跟标点且不超过 3 位」。
 - **字体表打包**：`resource/font_map_table.json` 必须显式打进 exe，否则题干乱码。
+- **带 BOM 的配置文件**：Windows 记事本「另存为 UTF-8」会给文件加 BOM，而 configparser
+  用 `utf8` 读带 BOM 的文件会抛 `MissingSectionHeaderError`（第一段变成 `\ufeff[common]`），
+  现象是**程序一启动就崩**。已全部改用 `utf-8-sig` 读取（带不带 BOM 都能读）。
 
 ---
 
@@ -107,7 +110,8 @@ provider = TikuIcodef,TikuAnevol,AI
     ├── probe_anevol.py          鉴权矩阵探针
     ├── analyze_concurrency.py   日志分析：统计视频并发分布
     ├── analyze_startup.py       日志分析：对比开局节奏
-    └── verify_exe_modules.py    离线校验 exe 里到底装了什么（解包内嵌 PYZ）
+    ├── verify_exe_modules.py    离线校验 exe 里到底装了什么（解包内嵌 PYZ）
+    └── publish_to_github.ps1    一键发布到 GitHub（自动脱敏 + 密钥扫描闸门）
 ```
 
 ---

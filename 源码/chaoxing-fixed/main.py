@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 import argparse
 import configparser
 import enum
@@ -110,7 +110,10 @@ def parse_args():
 def load_config_from_file(config_path):
     """从配置文件加载设置"""
     config = configparser.ConfigParser()
-    config.read(config_path, encoding="utf8")
+    # 用 utf-8-sig：Windows 记事本另存为 UTF-8 会带 BOM，而带 BOM 的文件用 "utf8" 读
+    # 会让 configparser 直接抛 MissingSectionHeaderError（第一段变成 "\ufeff[common]"），
+    # 现象就是「程序一启动就崩」。utf-8-sig 带不带 BOM 都能读。
+    config.read(config_path, encoding="utf-8-sig")
     
     common_config: dict[str, Any] = {}
     tiku_config: dict[str, Any] = {}

@@ -33,8 +33,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 # ---------------------------------------------------------------------------
 # 用户配置区
 # ---------------------------------------------------------------------------
-# token 解析顺序：环境变量 ANEVOL_TOKEN > 同目录 anevol_token.txt > 下面这个内置默认值。
-# 请不要把真实 token 写进这里再提交到公开仓库，用环境变量或 anevol_token.txt。
 ANEVOL_TOKEN = ""
 ANEVOL_URL = "https://tiku.anevol.cn/api/search"
 

@@ -304,6 +304,32 @@ def main():
     ok = ("未收录" in msgs and "获取答案失败" not in msgs)
     results.append(report("「题不在库里」记 INFO「未收录」，不再出现「获取答案失败」", ok))
 
+    # 11) 配置读取：带 BOM 的 config.ini 也必须能读
+    #     起因：发布配置模板时用 PowerShell 的 Set-Content -Encoding UTF8 写出，
+    #     它会给文件加 BOM；而 configparser 用 "utf8" 读带 BOM 的文件会直接抛
+    #     MissingSectionHeaderError（第一段变成 "\ufeff[common]"），程序一启动就崩。
+    import tempfile
+    from main import load_config_from_file
+
+    bom_ini = os.path.join(tempfile.gettempdir(), "chaoxing_bom_selftest.ini")
+    with open(bom_ini, "w", encoding="utf-8-sig") as fp:   # utf-8-sig = 带 BOM
+        fp.write("[common]\nusername = selftest_user\npassword = pw\n"
+                 "[tiku]\nprovider = TikuIcodef\nsubmit = false\ncover_rate = 0.8\n")
+    try:
+        c_common, c_tiku, _ = load_config_from_file(bom_ini)
+        ok = (c_common.get("username") == "selftest_user"
+              and c_tiku.get("provider") == "TikuIcodef")
+        detail = "  BOM 配置读取成功"
+    except Exception as e:  # noqa: BLE001
+        ok = False
+        detail = "  读取失败: {}: {}".format(type(e).__name__, e)
+    finally:
+        try:
+            os.remove(bom_ini)
+        except OSError:
+            pass
+    results.append(report("带 BOM 的 config.ini 也能正常读取（记事本另存为 UTF-8）", ok, detail))
+
     print("-" * 96)
     print(" 结果: {} passed, {} failed".format(sum(results), len(results) - sum(results)))
     print("=" * 96)

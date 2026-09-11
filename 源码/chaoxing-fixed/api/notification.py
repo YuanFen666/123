@@ -46,7 +46,8 @@ class NotificationService(ABC):
         """
         try:
             config = configparser.ConfigParser()
-            config.read(self.CONFIG_PATH, encoding="utf8")
+            # utf-8-sig 兼容带 BOM 的配置文件
+            config.read(self.CONFIG_PATH, encoding="utf-8-sig")
             return config['notification']
         except (KeyError, FileNotFoundError):
             logger.info("未找到notification配置，已忽略外部通知功能")

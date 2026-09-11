@@ -6,10 +6,7 @@ import urllib.error
 import urllib.request
 
 TOKEN = "在这里填你的 ANEVOL token（不要提交真实值）"
-URL = "https://tiku.anevol.cn/api/search?token=" + TOKEN
-
-CASES = [
-    ("正常短题", {"title": "中国的首都是"}),
+URL = "https://tiku.anevol.cn/api/search?TOKEN = "在这里填你的 ANEVOL token（不要提交真实值）"正常短题", {"title": "中国的首都是"}),
     ("正常选择题", {"title": "下列哪个数是质数？", "options": "A. 4\nB. 5\nC. 6\nD. 8", "type": "single"}),
     ("乱码题干(截图同款)", {"title": "均策略络空华的落子候训进行地展和评估，拉助圻策", "type": "single"}),
     ("乱码题干(截图同款2)", {"title": "未来人猩智能发魔播可能包挫以", "type": "multiple"}),

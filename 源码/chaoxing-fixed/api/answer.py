@@ -199,7 +199,8 @@ class Tiku:
         """
         try:
             config = configparser.ConfigParser()
-            config.read(self.CONFIG_PATH, encoding="utf8")
+            # utf-8-sig 兼容带 BOM 的配置文件（记事本另存为 UTF-8 会加 BOM）
+            config.read(self.CONFIG_PATH, encoding="utf-8-sig")
             return config['tiku']
         except (KeyError, FileNotFoundError):
             logger.info("未找到tiku配置, 已忽略题库功能")
