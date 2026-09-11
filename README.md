@@ -85,6 +85,13 @@ provider = TikuIcodef,TikuAnevol,AI
 - **带 BOM 的配置文件**：Windows 记事本「另存为 UTF-8」会给文件加 BOM，而 configparser
   用 `utf8` 读带 BOM 的文件会抛 `MissingSectionHeaderError`（第一段变成 `\ufeff[common]`），
   现象是**程序一启动就崩**。已全部改用 `utf-8-sig` 读取（带不带 BOM 都能读）。
+- **并发写答案缓存**：`Tiku.query` 每次查询都会 `new` 一个 `CacheDAO()`，而原版把锁挂在**实例**上
+  （`self._lock = threading.RLock()`），等于每个 worker 各持一把锁 = 没锁。8 个 worker 并发答题时
+  多个线程同时 `os.replace()` 抢写 `cache.json`，Windows 上报
+  `[WinError 5] 拒绝访问`（实测日志刷了 10 次），答案是写不进缓存、后面被重复查询。
+  已改为**模块级共享锁** + `os.replace` 退避重试，并新增 `selftest_cache.py` 回归测试。
+  > 这个 bug 一直存在，只是原版题库命中率低、几乎不写缓存，所以从没暴露；
+  > 接了题库链之后命中率接近 100%，缓存写入频率暴增才把它打出来。
 
 ---
 

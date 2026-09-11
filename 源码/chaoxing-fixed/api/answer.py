@@ -25,6 +25,20 @@ disable_warnings(exceptions.InsecureRequestWarning)
 __all__ = ["CacheDAO", "Tiku", "TikuYanxi", "TikuLike", "TikuAdapter", "TikuAnevol", "TikuIcodef",
            "TikuChain", "AI", "SiliconFlow"]
 
+# 全进程共享的缓存锁 + 替换重试参数。
+#
+# 【为什么必须是模块级的锁】Tiku.query 每次查询都会 new 一个 CacheDAO()。
+# 原版把锁挂在实例上（self._lock = threading.RLock()），于是每个 CacheDAO 各有一把锁，
+# 8 个 worker 并发答题时完全锁不住，多个线程同时 os.replace() 抢写 cache.json，
+# 在 Windows 上直接抛 [WinError 5] 拒绝访问（实测日志刷了 10 次），
+# 后果是答案写不进缓存、后面被重复查询。改成模块级锁才能真正常互斥。
+_CACHE_LOCK = threading.RLock()
+# Windows 上目标文件可能被杀毒软件或另一个实例短暂占用，os.replace 会失败；
+# 退避重试几次基本都能成功。
+_CACHE_REPLACE_RETRY = 6
+_CACHE_REPLACE_BACKOFF = 0.05
+
+
 class CacheDAO:
     """
     @Author: SocialSisterYi
@@ -34,7 +48,8 @@ class CacheDAO:
 
     def __init__(self, file: str = DEFAULT_CACHE_FILE):
         self.cache_file = Path(file)
-        self._lock = threading.RLock()
+        # 兼容旧代码里对 self._lock 的引用；真正生效的是模块级共享锁
+        self._lock = _CACHE_LOCK
         if not self.cache_file.is_file():
             self._write_cache({})
 
@@ -111,7 +126,17 @@ class CacheDAO:
                         json.dump(data, fp, ensure_ascii=False, indent=4)
                         fp.flush()
                         os.fsync(fp.fileno())
-                    os.replace(tmp_path, str(self.cache_file))
+                    # Windows 上被杀软/另一个实例短暂占用时会报 WinError 5/32，退避重试
+                    for attempt in range(_CACHE_REPLACE_RETRY):
+                        try:
+                            os.replace(tmp_path, str(self.cache_file))
+                            break
+                        except OSError as e:
+                            if attempt >= _CACHE_REPLACE_RETRY - 1:
+                                raise
+                            logger.debug(
+                                "缓存替换被占用，第 {} 次重试 -> {}".format(attempt + 1, e))
+                            time.sleep(_CACHE_REPLACE_BACKOFF * (attempt + 1))
                 except Exception as e:
                     # 清理临时文件
                     try:
