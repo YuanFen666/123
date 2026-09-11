@@ -588,13 +588,25 @@ class ExamTaker:
             raise ExamAborted("开考返回意外状态 HTTP {}".format(r.status_code))
 
         loc = r.headers.get("Location", "")
+        logger.info("开考响应: HTTP {} -> {}".format(r.status_code, loc[:160]))
         m = re.search(r"[?&]enc=([^&]+)", loc)
         if not m:
-            raise ExamAborted("开考重定向里没有 enc 参数: {}".format(loc[:120]))
+            raise ExamAborted("开考重定向里没有 enc 参数: {}".format(loc[:160]))
         self.enc = m.group(1)
         self.started = True
         logger.warning("已进入考场，计时开始！")
-        self.fetch(0)   # 第一题会把 enc/剩余时间刷新出来
+        first = self.fetch(0)   # 第一题会把 enc/剩余时间刷新出来
+
+        # 【保险】真开考的考试一定带计时。如果取完第一题计时参数还是 0，
+        # 说明这场考试其实没被真正开始（取题接口不开考也能渲染题目），
+        # 这时候再提交只会被服务端秒拒「无效操作」，纯属白跑还刷一堆错误日志。
+        if not self.remain_time and not self.enc_remain_time:
+            raise ExamInProgressError(
+                "开考后服务端没有返回考试计时（remainTime/encRemainTime 都是 0），"
+                "说明考试没有真正开始。已停止，避免继续发无效提交。")
+        logger.info("考试计时: 剩余 {} 秒（encRemainTime={}）, encLastUpdateTime={}".format(
+            self.remain_time, self.enc_remain_time, self.last_update_time))
+        return first
 
     # ---------------- 4. 取题 ----------------
     def fetch(self, index: int) -> ExamQuestion:
@@ -617,6 +629,15 @@ class ExamTaker:
         form = soup.select_one("form#submitTest")
         if form is None:
             raise RuntimeError("页面里没有 form#submitTest（可能被风控或页面结构变了）")
+        # 【诊断】第一次取题时把表单里的字段名全打出来 —— 这些字段名（enc / encRemainTime /
+        # remainTime / encLastUpdateTime / testUserRelationId…）如果和预期不一致，
+        # 计时参数就会一直是 0，提交必然被判「无效操作」。
+        if index == 0:
+            fields = []
+            for inp in form.select("input,textarea"):
+                nm = inp.get("id") or inp.get("name") or "?"
+                fields.append("{}={}".format(nm, str(inp.get("value") or "")[:24]))
+            logger.debug("考试表单字段({} 个): {}".format(len(fields), " | ".join(fields[:40])))
         for key, attr in (("enc", "enc"), ("enc_remain_time", "encRemainTime"),
                           ("remain_time", "remainTime"), ("last_update_time", "encLastUpdateTime")):
             node = form.select_one("input#{}".format(attr))
@@ -625,6 +646,13 @@ class ExamTaker:
                     setattr(self, key, int(node["value"]) if key != "enc" else node["value"])
                 except (TypeError, ValueError):
                     pass
+        # 开考后真正生效的考试会话 id 以取题页为准（封面页拿到的可能不是最终值）
+        rid = form.select_one("input#testUserRelationId")
+        if rid is not None and (rid.get("value") or "").strip():
+            if self.exam_answer_id and rid["value"].strip() != str(self.exam_answer_id):
+                logger.debug("考试会话 id 更新: {} -> {}".format(
+                    self.exam_answer_id, rid["value"].strip()))
+            self.exam_answer_id = rid["value"].strip()
         node = form.select_one("div.questionWrap.singleQuesId.ans-cc-exam")
         if node is None:
             raise RuntimeError("页面里没有题目节点")
@@ -677,9 +705,19 @@ class ExamTaker:
         r = self.session.post(EXAM_SUBMIT, params=params, data=data,
                               headers=exam_headers(), timeout=25)
         r.raise_for_status()
-        js = r.json()
+        try:
+            js = r.json()
+        except Exception:  # noqa: BLE001
+            raise RuntimeError("提交返回的不是 JSON（HTTP {}）：{}".format(
+                r.status_code, r.text[:200]))
         if js.get("status") != "success":
-            raise RuntimeError("提交失败：{}".format(js.get("msg")))
+            # 【诊断】把服务端原话完整带出来，否则只看到「无效操作」没法查。
+            # 常见原因：考试没真正开始（计时参数为 0）→ 整个会话无效。
+            logger.debug("提交失败响应: {}".format(str(js)[:400]))
+            raise RuntimeError("提交失败：{}（第 {} 题 qid={}；服务端计时 remainTime={} "
+                               "encRemainTime={}）".format(
+                                   js.get("msg"), index, qid,
+                                   self.remain_time, self.enc_remain_time))
         if not final and js.get("data"):
             parts = str(js["data"]).split("|")
             if len(parts) >= 3:
@@ -821,6 +859,15 @@ class ExamTaker:
                 logger.error("  第 {} 题提交失败 -> {}: {}".format(index, type(e).__name__, e))
                 if "时间已用完" in str(e):
                     self._warn_in_progress("提交时提示时间已用完")
+                    break
+                if "无效操作" in str(e):
+                    # 服务端一律回「无效操作」= 这个考试会话无效（多半是没真正开考）。
+                    # 继续把每一题都发一遍只是刷错误日志，立刻停手并告诉用户。
+                    logger.error("=" * 90)
+                    logger.error("服务端对所有提交都回「无效操作」，说明这场考试的会话无效"
+                                 "（最常见原因：考试没有真正开始，计时参数是 0）。")
+                    logger.error("已停止提交。请到手机/网页上确认这场考试的状态。")
+                    logger.error("=" * 90)
                     break
             index += 1
 
