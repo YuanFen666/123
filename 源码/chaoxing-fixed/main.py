@@ -362,13 +362,11 @@ def take_exams(watch, exams, courses, tiku, auto_submit: bool, openc: str = "") 
     logger.info("  前提一：先用「只体检」确认这场考试现在能考（别卡在章节任务点门槛上）")
     logger.info("  前提二：进考场就开始计时、通常只有一次机会 —— 所以第一次请用第 2 档，")
     logger.info("          让程序答题但由你自己核对后交卷")
-    logger.info("  已知限制：整卷模式（一页显示全部题）的大型考试需要 openc 才能保存，")
-    logger.info("          该值只在浏览器考试页 URL 里，填到 config.ini 的 exam_openc；")
-    logger.info("          这类考试更推荐直接用浏览器里的答题脚本")
+    logger.info("  整卷模式：整卷页的 openc 会从页面里自动读取，不需要手工配置")
     logger.info("  成本提示：命中本地 cache.json 的题目不消耗任何题库额度")
     logger.info("=" * 90)
-    if not (common_config.get("exam_openc") or "").strip():
-        logger.info("（exam_openc 未填写：若这场考试是整卷模式，会回答但存不上）")
+    if not (openc or "").strip():
+        logger.debug("（未从配置提供 openc —— 整卷页打开后会自动从页面 input#openc 读取）")
 
     by_course = {c.get("courseId"): c for c in (courses or [])}
     todo = [e for e in (exams or []) if e.todo and e.exam_id]
