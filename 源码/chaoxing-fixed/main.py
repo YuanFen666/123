@@ -128,6 +128,16 @@ def parse_args():
         type=str, default=None,
         help="整卷模式入口参数：从浏览器考试页 URL 里 ?openc= 后面那串复制过来",
     )
+    parser.add_argument(
+        "--account-index",
+        type=int, default=None,
+        help="多账号时直接用第 N 组（1 起），不再交互询问（供启动脚本调用）",
+    )
+    parser.add_argument(
+        "--list-accounts",
+        action="store_true",
+        help="只打印 config.ini 里的账号列表（序号|打码手机号）到 stdout，不登录",
+    )
 
     # 在解析之前捕获 -h 的行为
     if len(sys.argv) == 2 and sys.argv[1] in {"-h", "--help"}:
@@ -166,17 +176,38 @@ def mask_account(user: str) -> str:
     return (user[:2] + "***") if user else "?"
 
 
-def choose_account(accounts: list):
+def choose_account(accounts: list, forced_index=None):
     """
     多账号时让用户选一个；只有一组就直接用。
 
-    非交互场景（stdin 被重定向或已读完）会退回到第一个账号并写日志，
-    绝不把无人值守的运行卡住。
+    三种"不能问"的场景都会自动退回第 1 个账号（绝不卡住）：
+      · forced_index 指定了编号（bat 里已经问过，用 --account-index 传进来）
+      · stdout 被重定向（bat 用 for /f 抓输出时，菜单根本显示不出来）
+      · stdin 读完 / Ctrl+C
     """
     if not accounts:
         return None, None
+    if forced_index:
+        try:
+            idx = int(forced_index)
+            if 1 <= idx <= len(accounts):
+                user, pwd = accounts[idx - 1]
+                logger.info("使用指定的账号 #{}: {}".format(idx, mask_account(user)))
+                return user, pwd
+            logger.warning("--account-index {} 超出范围（共 {} 组），改用第 1 个".format(
+                idx, len(accounts)))
+        except (TypeError, ValueError):
+            logger.warning("--account-index 不是数字，改用第 1 个")
+        return accounts[0]
     if len(accounts) == 1:
         logger.info("使用 config.ini 里的账号: {}".format(mask_account(accounts[0][0])))
+        return accounts[0]
+    # 【关键】bat 里 for /f 会把 stdout 抓走，这时菜单是"看不见"的 ——
+    # 如果照样 input()，程序就静默卡死，用户只看到"读到 2 组账号"然后不动了。
+    if not sys.stdout.isatty():
+        logger.warning("输出被重定向、无法显示选择菜单，自动使用第 1 个账号: {}".format(
+            mask_account(accounts[0][0])))
+        logger.warning("（想让程序问你，请在 cmd 里直接跑 exe，或用 --account-index 指定）")
         return accounts[0]
 
     print("")
@@ -305,6 +336,9 @@ def init_config():
     common_config["_exam_submit"] = bool(getattr(args, "exam_submit", False))
     if getattr(args, "exam_openc", None):
         common_config["exam_openc"] = args.exam_openc.strip()
+    if getattr(args, "account_index", None):
+        common_config["_account_index"] = args.account_index
+    common_config["_list_accounts"] = bool(getattr(args, "list_accounts", False))
     return common_config, tiku_config, notification_config
 
 
@@ -378,7 +412,7 @@ def init_chaoxing(common_config, tiku_config):
     if not accounts and username and password:
         accounts = [(username, password)]
     if accounts and not use_cookies:
-        username, password = choose_account(accounts)
+        username, password = choose_account(accounts, common_config.get("_account_index"))
 
     # 如果没有提供用户名密码，从命令行获取
     if (not username or not password) and not use_cookies:
@@ -722,7 +756,21 @@ def main():
     try:
         # 初始化配置
         common_config, tiku_config, notification_config = init_config()
-        
+
+        # --list-accounts：只打印账号列表就退出（不登录、不初始化题库），
+        # 供启动脚本拉起「选账号」菜单用。日志走 stderr，这里只往 stdout 打结果。
+        if common_config.get("_list_accounts"):
+            _accs = list(common_config.get("accounts") or [])
+            if not _accs and common_config.get("username"):
+                _accs = [(common_config["username"], common_config.get("password", ""))]
+            try:
+                sys.stdout.reconfigure(errors="replace")
+            except Exception:  # noqa: BLE001
+                pass
+            for _i, (_u, _p) in enumerate(_accs, 1):
+                print("{}|{}".format(_i, mask_account(_u)))
+            return
+
         # 强制播放按照配置文件调节
         common_config["speed"] = min(2.0, max(1.0, common_config.get("speed", 1.0)))
         common_config["notopen_action"] = common_config.get("notopen_action", "retry")

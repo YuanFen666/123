@@ -36,6 +36,32 @@ if not exist "%CFG%" (
     exit /b 1
 )
 
+rem ================================================================
+rem  选账号：只在这里问一次，然后把 --account-index 传给后面每一次运行。
+rem  必须这样做 —— 下面 :PICK_COURSE 里的 --list-courses 是用 for /f 抓输出的，
+rem  那个子进程的 stdout 被吞掉，如果让它自己去问账号，菜单根本显示不出来，
+rem  程序会静默卡死在等一个你看不见的输入上（实际踩过这个坑）。
+rem ================================================================
+set "ACCOUNT_ARG="
+set "NACC=0"
+for /f "usebackq tokens=1,2 delims=|" %%a in (`""%EXE%" -c "%CFG%" --list-accounts"`) do (
+    set /a NACC+=1
+    set "ACC%%a=%%b"
+)
+if !NACC! GTR 1 (
+    cls
+    echo.
+    echo  ================================================================
+    echo    检测到 !NACC! 组账号，请选择本次要登录的：
+    echo  ================================================================
+    for /l %%i in (1,1,!NACC!) do echo     [%%i] !ACC%%i!
+    echo  ================================================================
+    echo.
+    set "ACCPICK="
+    set /p "ACCPICK=请输入账号编号后回车（直接回车=第 1 个）: "
+    if defined ACCPICK set "ACCOUNT_ARG=--account-index !ACCPICK!"
+)
+
 :MENU
 cls
 echo.
@@ -74,7 +100,7 @@ echo  ----------------------------------------------------------------
 echo   ^>^>^> 视频 + 章节答题模式启动...
 echo  ----------------------------------------------------------------
 echo.
-"%EXE%" -c "%CFG%" %COURSE_ARG%
+"%EXE%" -c "%CFG%" %ACCOUNT_ARG% %COURSE_ARG%
 goto DONE
 
 
@@ -152,7 +178,7 @@ echo  ----------------------------------------------------------------
 echo   ^>^>^> 考试模式启动（%EXAM_ARG%）
 echo  ----------------------------------------------------------------
 echo.
-"%EXE%" -c "%CFG%" %EXAM_ARG% %COURSE_ARG%
+"%EXE%" -c "%CFG%" %ACCOUNT_ARG% %EXAM_ARG% %COURSE_ARG%
 goto DONE
 
 
@@ -178,7 +204,7 @@ echo.
 echo   正在读取课程列表（需要登录，约几秒）...
 echo.
 set "N=0"
-for /f "usebackq tokens=1,2,3 delims=|" %%a in (`""%EXE%" -c "%CFG%" --list-courses"`) do (
+for /f "usebackq tokens=1,2,3 delims=|" %%a in (`""%EXE%" -c "%CFG%" %ACCOUNT_ARG% --list-courses"`) do (
     set /a N+=1
     set "C%%a=%%c"
     echo     [%%a] %%b

@@ -108,6 +108,34 @@ password = aaa
     ok = got == ("a" * 11, "pw1")
     results.append(report("stdin 读完（无人值守）→ 退回第 1 个，不卡死", ok, "  -> {!r}".format(got)))
 
+    # ---- 4b) bat 传进来的 --account-index ----
+    got = choose_account([("a" * 11, "pw1"), ("b" * 11, "pw2")], 2)
+    ok = got == ("b" * 11, "pw2")
+    results.append(report("--account-index 2 → 直接取第 2 组（不再询问）", ok, "  -> {!r}".format(got)))
+
+    got = choose_account([("a" * 11, "pw1"), ("b" * 11, "pw2")], 99)
+    ok = got == ("a" * 11, "pw1")
+    results.append(report("--account-index 越界 → 退回第 1 组", ok, "  -> {!r}".format(got)))
+
+    # ---- 4c) stdout 被重定向时必须自动选，不能弹一个看不见的菜单 ----
+    # 实际踩过：bat 里 --list-courses 用 for /f 抓输出，子进程弹账号菜单却被吞掉，
+    # 程序静默卡死等一个用户永远看不到的输入。
+    class _NoTty:
+        def isatty(self): return False
+        def write(self, *_a): pass
+        def flush(self): pass
+
+    import sys as _sys
+    _real = _sys.stdout
+    _sys.stdout = _NoTty()
+    try:
+        got = choose_account([("a" * 11, "pw1"), ("b" * 11, "pw2")])
+    finally:
+        _sys.stdout = _real
+    ok = got == ("a" * 11, "pw1")
+    results.append(report("stdout 被重定向（for /f）→ 自动用第 1 组，不弹看不见的菜单", ok,
+                          "  -> {!r}".format(got)))
+
     # ---- 5) 打码 ----
     ok = (mask_account("13800000000") == "138****00" and mask_account("abc") == "ab***")
     results.append(report("手机号打码显示", ok,
