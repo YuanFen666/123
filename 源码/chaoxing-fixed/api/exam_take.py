@@ -115,14 +115,19 @@ def web_headers(referer: str = "") -> dict:
 
 def tune_tiku_for_exam(tiku) -> None:
     """
-    考试是按时间走的，题库链那套「防限流 + 耐心等」在这里反而害事。
+    考试是按时间走的，题库链那套「防限流」的慢间隔在这里是浪费；
+    但**超时不能一味收紧** —— 收紧超时会逼着题库提前认输，
+    把题丢给准确率更低的来源。
 
-    实测慢在哪（用户日志）：
-        WARNING 网课小工具题库读超时 -> ReadTimeout(>15.0s)   ← 每题白等 15 秒
-        15 秒后才转下一个题库，整场 85 题就白扔 20 分钟
-    所以除了压小请求间隔，还要**把读超时也收紧**：
-        icodef  15s -> 4s      anevol 40s -> 6s      AI 30s -> 8s
-    超时即放弃、直接问下一个来源 —— 考试里"快速拿一个够用的答案"远好过"等一个完美的答案"。
+    两轮实测（详见 config.ini 的[tiku]注释）：
+      速度：  ANEVOL 20~42 秒/题      AI 0.5~2 秒/题
+      准确率：中国商贸文化 85 题（拿批改页每题得分对日志来源）
+              ANEVOL 27 题 100%     AI 53 题 70%
+              全部 16 道失分题都是 AI 答的。
+
+    考试预算其实很宽（100 分钟 / 85 题 = 每题 70 秒），所以这里给题库**留足时间**：
+        ANEVOL 50 秒（实测最长 42 秒 + 余量）      AI 20 秒
+    只有「两次请求之间的间隔」继续压小 —— 它不影响答案质量，只影响等待。
     """
     if tiku is None:
         return
@@ -131,21 +136,23 @@ def tune_tiku_for_exam(tiku) -> None:
         targets = [tiku]
     for p in targets:
         name = type(p).__name__
-        if name == "TikuIcodef":
-            p.min_interval = 0.3
-            p.read_timeout = 4
-        elif name == "AI":
-            p.min_interval_seconds = 0.3
-            p.read_timeout = 8
-        elif name == "TikuAnevol":
+        if name == "TikuAnevol":
             p.min_interval = 0.2
             try:
-                # ANEVOL 的读超时是模块级常量（在请求处直接读），只能改全局
+                # ANEVOL 的读超时是模块级常量（请求处直接读），只能改全局。
+                # 给到 50 秒：实测 20~42 秒，之前压到 6 秒会让它白超时、把题推给 AI。
                 import api.answer as _ans
-                _ans._ANEVOL_READ_TIMEOUT = 6
+                _ans._ANEVOL_READ_TIMEOUT = 50
             except Exception:  # noqa: BLE001
                 pass
-        logger.debug("考试模式：已收紧 {} 的请求间隔与超时".format(name))
+        elif name == "AI":
+            p.min_interval_seconds = 0.3
+            p.read_timeout = 20
+        elif name == "TikuIcodef":
+            # 已不在链路里；留着兼容，真加回来时给它短超时（命中率只有 3.5%）
+            p.min_interval = 0.3
+            p.read_timeout = 4
+        logger.debug("考试模式：已调整 {} 的间隔与超时".format(name))
 
 
 def get_ts() -> str:
