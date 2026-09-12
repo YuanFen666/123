@@ -358,6 +358,90 @@ def _remove_escape(text: str) -> str:
     return (text or "").replace("\xa0", " ").replace("\u2002", "").replace("\u200b", "").replace("\u3000", "").strip()
 
 
+def parse_preview_question(node, index: int = 0) -> ExamQuestion:
+    """
+    解析「整卷预览」页(标题=整卷预览)的题目。
+
+    结构来自真实页面抓取（2026-09-12 用户导出的考试页 HTML）。它和我们最早
+    照参考实现写的**单题页结构完全不是一套** —— 这才是当初"解析到 0 题"的真因，
+    跟 openc 毫无关系。
+
+        <div id="sigleQuestionDiv_890718804" class="questionLi ..." data="890718804">
+          <h3 class="mark_name colorDeep">1. <span>(单选题, 1.0 分)</span>
+              <div>题干文字</div></h3>
+          <form>
+            <input name="type890718804"  value="0">
+            <input name="questionId"     value="890718804">
+            <input name="typeName890718804" value="单选题">
+            <input name="start"          value="0">
+            <input id="answer890718804"  value="">
+            <div class="stem_answer">
+              <div class="answerBg" onclick="saveSingleSelect(this,'890718804')">
+                <span data="B" qid="890718804" class="saveSingleSelect ... num_option">A</span>
+                <div class="answer_p">自然条件</div>
+              </div>
+              ...
+
+    【最关键的一点】选项是乱序的（页面里 randomOptions=true）：
+        span 的 **data** 才是原始选项键 —— 提交必须用它；
+        显示出来的字母（num_option 的 A/B/C/D）只是乱序后的展示位置。
+    页面 JS addChoice() 里就是这么做的：
+        choiceContent = choiceContent + $(this).attr("data");   // 拼 data，不是显示字母
+    取错一个字母，整份答案就全错，所以这里只认 data。
+    """
+    qid_in = node.select_one("input[name='questionId']")
+    qid = 0
+    if qid_in is not None and (qid_in.get("value") or "").strip():
+        try:
+            qid = int(qid_in["value"].strip())
+        except ValueError:
+            qid = 0
+    if not qid:
+        try:
+            qid = int((node.get("data") or "0").strip())
+        except ValueError:
+            qid = 0
+
+    type_in = node.select_one("input[name^='type']")
+    qtype = QT_SINGLE
+    if type_in is not None:
+        raw = (type_in.get("value") or "").strip()
+        if raw.lstrip("-").isdigit():
+            qtype = int(raw)
+
+    title = ""
+    h3 = node.select_one("h3.mark_name")
+    if h3 is not None:
+        parts = []
+        for tag in h3.children:
+            if getattr(tag, "name", None) == "span":   # 跳过「(单选题, 1.0 分)」
+                continue
+            parts.append(tag.get_text() if hasattr(tag, "get_text") else str(tag))
+        title = re.sub(r"^\s*\d+\s*[.、]\s*", "", "".join(parts))
+    title = _remove_escape(title)
+
+    q = ExamQuestion(id=qid, type=qtype, title=title, index=index)
+
+    ans_in = node.select_one("input[id^='answer']")
+    q.old_answer = (ans_in.get("value") if ans_in is not None else "") or ""
+
+    if qtype in (QT_SINGLE, QT_MULTI, QT_JUDGE):
+        for opt in node.select("div.answerBg"):
+            sp = opt.select_one("span[data]")
+            if sp is None:
+                continue
+            key = (sp.get("data") or "").strip()
+            if not key:
+                continue
+            tx = opt.select_one("div.answer_p") or opt
+            q.options[key] = _remove_escape(tx.get_text())
+    else:
+        for blank in node.select("div.completionList.objectAuswerList"):
+            span = blank.select_one("span.grayTit")
+            q.blanks.append(_remove_escape(span.get_text() if span else ""))
+    return q
+
+
 def parse_question(node, index: int = 0) -> ExamQuestion:
     """解析单题（结构来自真实考试页，见模块头注释）。"""
     qid = int(node.select_one("input[name='questionId']")["value"])
@@ -929,17 +1013,31 @@ class ExamTaker:
                     setattr(self, key, int(node["value"]) if key != "enc" else node["value"])
                 except (TypeError, ValueError):
                     pass
-        nodes = soup.select("div.questionWrap.singleQuesId.ans-cc-exam")
+        # openc 就在整卷页里（<input type="hidden" id="openc">）—— 不用你手工粘。
+        # 页面能加载说明会话有效；openc 只是给后续请求（保存）带的凭证。
+        oc = soup.select_one("input#openc")
+        if oc is not None and (oc.get("value") or "").strip():
+            self.openc = oc["value"].strip()
+
+        # 【真实选择器】整卷页用 div.questionLi / div[id^=sigleQuestionDiv_]，
+        # 不是单题页的 questionWrap/ans-cc-exam —— 之前就是这里错了才解析到 0 题。
+        nodes = soup.select("div.questionLi")
         if not nodes:
-            nodes = soup.select("div.ans-cc-exam")
-        questions = [parse_question(n, i) for i, n in enumerate(nodes)]
+            nodes = soup.select("div[id^='sigleQuestionDiv_']")
+        if not nodes:
+            nodes = soup.select("div.questionWrap.singleQuesId.ans-cc-exam")
+        questions = [parse_preview_question(n, i) for i, n in enumerate(nodes)]
         logger.info("整卷模式：解析到 {} 题；paperId={} examCreateUserId={} openc={}".format(
             len(questions), self.paper_id or "(没找到)", self.exam_create_user_id or "(没找到)",
-            self.openc or "(空)"))
-        if not questions and not self.openc:
-            logger.warning("整卷页返回 0 题，且 openc 为空 —— 整卷入口需要它。")
-            logger.warning("请把浏览器考试页地址栏里 ?openc= 后面那串复制到 config.ini：")
-            logger.warning("    [common]  exam_openc = xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
+            (self.openc[:12] + "…") if self.openc else "(空)"))
+        if questions and questions[0].options:
+            _q0 = questions[0]
+            logger.info("  第 1 题抽样：[{}] {} / 选项(键=原始键, 乱序后展示) {}".format(
+                _q0.type_name, _q0.title[:40],
+                {k: v[:12] for k, v in list(_q0.options.items())[:4]}))
+        if not questions:
+            logger.warning("整卷页没解析到题目 —— 页面已存成 exam_preview_debug.html，"
+                           "请把它发给我（结构可能又变了）")
         return questions
 
     def save_preview(self, index: int, q: Optional[ExamQuestion], final: bool = False) -> dict:

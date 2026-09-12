@@ -364,6 +364,60 @@ def main():
                               fc.providers[0].min_interval, fc.providers[1].min_interval,
                               fc.providers[2].min_interval_seconds)))
 
+    # ---- 13) 整卷预览页解析（结构来自 2026-09-12 用户导出的真实考试页）----
+    # 当初"解析到 0 题"的真因就是选择器照错了页面结构，跟 openc 无关。
+    # 这里用真实结构做夹具，并锁死最关键的一点：选项 key 必须取 span 的 data
+    # （原始键），而不是显示出来的字母（乱序后的展示位置）。
+    Q_PREVIEW = """
+    <div id="sigleQuestionDiv_890718804" class="questionLi scroll_890718804 singleQuesId" data="890718804">
+      <h3 class="mark_name colorDeep">1. <span class="colorShallow"
+          aria-label="1. (单选题, 1.0分)">(单选题, 1.0 分)</span>
+        <div style="overflow:hidden;"> 现代农林业的核心特征之一是运用现代科学技术和（）来实现高效可持续发展。 </div>
+      </h3>
+      <form>
+        <input type="hidden" name="type890718804" value="0">
+        <input type="hidden" name="questionId" value="890718804">
+        <input type="hidden" name="typeName890718804" value="单选题">
+        <input type="hidden" name="start" value="7">
+        <input type="hidden" id="answer890718804" name="answer890718804" value="">
+        <div class="stem_answer">
+          <div class="clearfix answerBg" onclick="saveSingleSelect(this,'890718804');">
+            <span data="B" qid="890718804" class="saveSingleSelect choice890718804 num_option fl">A</span>
+            <div class="fl answer_p">自然条件</div>
+          </div>
+          <div class="clearfix answerBg" onclick="saveSingleSelect(this,'890718804');">
+            <span data="A" qid="890718804" class="saveSingleSelect choice890718804 num_option fl">B</span>
+            <div class="fl answer_p">传统经验</div>
+          </div>
+          <div class="clearfix answerBg" onclick="saveSingleSelect(this,'890718804');">
+            <span data="D" qid="890718804" class="saveSingleSelect choice890718804 num_option fl">C</span>
+            <div class="fl answer_p">手工工具</div>
+          </div>
+          <div class="clearfix answerBg" onclick="saveSingleSelect(this,'890718804');">
+            <span data="C" qid="890718804" class="saveSingleSelect choice890718804 num_option fl">D</span>
+            <div class="fl answer_p">现代工业装备和管理方法</div>
+          </div>
+        </div>
+      </form>
+    </div>
+    """
+    from api.exam_take import parse_preview_question
+    pq = parse_preview_question(BeautifulSoup(Q_PREVIEW, "lxml").select_one("div.questionLi"), 0)
+    ok = (pq.id == 890718804 and pq.type == QT_SINGLE
+          and "现代农林业" in pq.title and "单选题" not in pq.title and "1.0 分" not in pq.title)
+    results.append(report("整卷页解析：题号/题型/题干（题干已剔除题型分值）", ok,
+                          "  id={} type={} 题干={}".format(pq.id, pq.type_name, pq.title[:26])))
+
+    # ★ 最关键：选项 key 必须是 data（原始键），不是显示字母。用错就全盘皆错。
+    ok = (pq.options == {"B": "自然条件", "A": "传统经验",
+                         "D": "手工工具", "C": "现代工业装备和管理方法"})
+    results.append(report("整卷页解析：选项 key 取 data（原始键）而非显示字母", ok,
+                          "  -> {}".format(pq.options)))
+    ok = to_option_keys("自然条件", pq.options) == "B"
+    results.append(report("乱序下答案映射正确（'自然条件' -> B，不是显示位 A）", ok,
+                          "  to_option_keys('自然条件') = {}".format(
+                              to_option_keys("自然条件", pq.options))))
+
     print("-" * 100)
     print(" 结果: {} passed, {} failed".format(sum(results), len(results) - sum(results)))
     print("=" * 100)
