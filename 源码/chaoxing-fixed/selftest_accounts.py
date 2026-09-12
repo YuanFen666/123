@@ -109,7 +109,7 @@ password = aaa
     results.append(report("stdin 读完（无人值守）→ 退回第 1 个，不卡死", ok, "  -> {!r}".format(got)))
 
     # ---- 5) 打码 ----
-    ok = (mask_account("13800000000") == "130****66" and mask_account("abc") == "ab***")
+    ok = (mask_account("13800000000") == "138****00" and mask_account("abc") == "ab***")
     results.append(report("手机号打码显示", ok,
                           "  13800000000 -> {}   abc -> {}".format(
                               mask_account("13800000000"), mask_account("abc"))))
