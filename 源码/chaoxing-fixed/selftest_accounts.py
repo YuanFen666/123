@@ -36,13 +36,37 @@ class FakeInput:
         return self.answers.pop(0)
 
 
-def with_input(answers, fn):
-    real = builtins.input
+class FakeTty:
+    """假装 stdout 是终端 —— choose_account 现在会看 isatty()：
+    非终端（bat 的 for /f 抓走输出）就自动选第 1 个，不弹看不见的菜单。"""
+
+    def isatty(self):
+        return True
+
+    def write(self, *_a):
+        pass
+
+    def flush(self):
+        pass
+
+
+def with_input(answers, fn, tty=False):
+    """
+    按剧本喂 input()；喂完抛 EOFError（模拟非交互）。
+
+    tty=True 时才假装 stdout 是终端 —— 这样才会走到「让用户选」那条分支。
+    测试进程自己跑在管道里（非 TTY），不假装的话会被自动选择逻辑拦下。
+    """
+    real_in = builtins.input
+    real_out = sys.stdout
     builtins.input = FakeInput(answers)
+    if tty:
+        sys.stdout = FakeTty()
     try:
         return fn()
     finally:
-        builtins.input = real
+        builtins.input = real_in
+        sys.stdout = real_out
 
 
 def main():
@@ -89,22 +113,22 @@ password = aaa
     results.append(report("只有一组账号 → 直接使用（不询问）", ok, "  -> {!r}".format(got)))
 
     # ---- 3) 多组：按编号选 ----
-    got = with_input(["2"], lambda: choose_account([("a" * 11, "pw1"), ("b" * 11, "pw2")]))
+    got = with_input(["2"], lambda: choose_account([("a" * 11, "pw1"), ("b" * 11, "pw2")]), tty=True)
     ok = got == ("b" * 11, "pw2")
     results.append(report("多组账号 → 输入 2 选到第 2 个", ok, "  -> {!r}".format(got)))
 
     # 非法编号后重问，再给合法值
-    got = with_input(["9", "abc", "1"], lambda: choose_account([("a" * 11, "pw1"), ("b" * 11, "pw2")]))
+    got = with_input(["9", "abc", "1"], lambda: choose_account([("a" * 11, "pw1"), ("b" * 11, "pw2")]), tty=True)
     ok = got == ("a" * 11, "pw1")
     results.append(report("编号非法会重问（9/abc 都拒绝），直到给对", ok, "  -> {!r}".format(got)))
 
     # 直接回车 → 第 1 个
-    got = with_input([""], lambda: choose_account([("a" * 11, "pw1"), ("b" * 11, "pw2")]))
+    got = with_input([""], lambda: choose_account([("a" * 11, "pw1"), ("b" * 11, "pw2")]), tty=True)
     ok = got == ("a" * 11, "pw1")
     results.append(report("直接回车 → 默认第 1 个", ok, "  -> {!r}".format(got)))
 
     # ---- 4) 非交互：不能卡死 ----
-    got = with_input([], lambda: choose_account([("a" * 11, "pw1"), ("b" * 11, "pw2")]))
+    got = with_input([], lambda: choose_account([("a" * 11, "pw1"), ("b" * 11, "pw2")]), tty=True)
     ok = got == ("a" * 11, "pw1")
     results.append(report("stdin 读完（无人值守）→ 退回第 1 个，不卡死", ok, "  -> {!r}".format(got)))
 
