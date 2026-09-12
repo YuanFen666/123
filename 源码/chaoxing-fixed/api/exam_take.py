@@ -883,6 +883,24 @@ class ExamTaker:
         """拉整卷页面，解析 paperId / examCreateUserId / 全部题目。"""
         r = self.session.get(self.preview_url(), headers=web_headers(self.preview_url()), timeout=25)
         soup = BeautifulSoup(r.text, "lxml")
+        # 【诊断】把整卷页原样落盘 + 逐个数候选节点。
+        # 之前只看到"解析到 0 题"就下结论说缺 openc，其实没有证据 ——
+        # 得先看清服务端到底返回了什么（拒绝页？外壳页？还是结构不同）。
+        try:
+            with open("exam_preview_debug.html", "w", encoding="utf8") as _fp:
+                _fp.write(r.text)
+        except Exception as _e:  # noqa: BLE001
+            logger.debug("落盘整卷页失败 -> {}".format(_e))
+        _title = soup.find("title")
+        logger.info("整卷页 HTTP {}  {} 字节  title={!r}  已存 exam_preview_debug.html".format(
+            r.status_code, len(r.text), (_title.get_text(strip=True) if _title else "")[:40]))
+        for _sel in ("div.questionWrap.singleQuesId.ans-cc-exam", "div.ans-cc-exam",
+                     "div.questionWrap", "div.allAnswerList", "form#submitTest",
+                     "input#paperId", "input#examCreateUserId"):
+            logger.info("    候选节点 {:<42} -> {} 个".format(_sel, len(soup.select(_sel))))
+        _blank = soup.select_one("p.blankTips,li.msg,h2")
+        if _blank:
+            logger.info("    页面提示: {}".format(_blank.get_text(strip=True)[:80]))
 
         def pick(*names):
             for nm in names:
