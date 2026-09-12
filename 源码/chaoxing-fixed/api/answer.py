@@ -1689,6 +1689,16 @@ class TikuIcodef(_AnswerNormalizeMixin, Tiku):
         return self._normalize_text_answer(ans, qtype, options)
 
 
+def _available_provider_names():
+    """列出能写在 config.ini 的 provider 里的题库类名（报错提示用）。"""
+    out = []
+    for name, obj in list(globals().items()):
+        if (isinstance(obj, type) and issubclass(obj, Tiku)
+                and obj not in (Tiku, TikuChain)):
+            out.append(name)
+    return out
+
+
 class TikuChain(Tiku):
     """
     多题库顺序回退（config.ini 里 provider 写多个类名即可启用）：
@@ -1709,11 +1719,17 @@ class TikuChain(Tiku):
     def _init_tiku(self):
         raw = self._conf.get("provider") or ""
         names = [n.strip() for n in re.split(r"[,;，、\s]+", raw) if n.strip()]
+        _requested = list(names)
 
         for cls_name in names:
             cls = globals().get(cls_name)
             if not isinstance(cls, type) or not issubclass(cls, Tiku) or cls is TikuChain:
-                logger.error("题库链里的 '{}' 不是有效的题库类名，已跳过".format(cls_name))
+                # 【重要】写错名字不会报错中断，只会少一个来源 —— 比如
+                # "TikuAnevl,AI"（少个 o）会静默退化成「只有 AI」，准确率悄悄从 100% 掉到 70%。
+                # 所以这里把可选名字一并列出来，让人一眼看出该怎么改。
+                logger.error(
+                    "题库链里的 '{}' 不是有效的题库类名，已跳过。可选：{}".format(
+                        cls_name, " / ".join(sorted(_available_provider_names()))))
                 continue
             try:
                 inst = cls()
@@ -1737,6 +1753,13 @@ class TikuChain(Tiku):
         else:
             logger.info("题库链已加载，查询顺序: {} （前一个搜不到才会问下一个）".format(
                 " -> ".join(self.provider_names)))
+            # 配了几个、实际加载几个，对不上就明确提醒（避免拼错名字后悄悄降级）
+            if len(self.provider_names) != len(_requested):
+                logger.warning(
+                    "注意：config.ini 里写了 {} 个来源，实际只加载了 {} 个（{}）；"
+                    "未加载的会被跳过，请检查拼写".format(
+                        len(_requested), len(self.provider_names),
+                        " -> ".join(self.provider_names)))
 
     def _query(self, q_info: dict):
         for inst in self.providers:
