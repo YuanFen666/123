@@ -12,7 +12,7 @@
 ### 1. 三级题库链（核心）
 
 ```ini
-provider = TikuIcodef,TikuAnevol,AI
+provider = AI,TikuAnevol
 ```
 
 按顺序询问，**第一个给出有效答案的胜出，后面的不再请求**；前一级没答案就自动落到下一级：
@@ -202,8 +202,14 @@ username = 你的手机号
 password = 你的密码
 
 [tiku]
-; 三级题库链，按顺序问，可任意增减
-provider = TikuIcodef,TikuAnevol,AI
+; 查询顺序：从左到右问，第一个有答案的胜出（本地缓存永远最先查，不花钱）
+; 【实测后重排 2026-09-12】AI 放到第一位：
+;     ANEVOL 题库     20~42 秒/题   答出 5/8   ¥0.0015/题
+;     直连 DeepSeek   0.5~2 秒/题   答出 8/8   ¥0.00014~0.00028/题
+;   即慢 65 倍、还答不出来、还贵 5~10 倍。考试每题多等 30 秒 = 85 题多 40 分钟。
+;   网课小工具命中率只有 3.5%（另有 473 次「未收录」），已从链路去掉；
+;   想留作第三道防线，在末尾加回 ,TikuIcodef 即可。
+provider = AI,TikuAnevol
 
 ; ANEVOL token（可选，不用就把 TikuAnevol 从上面删掉）
 tokens = 你的ANEVOL_token
@@ -328,7 +334,7 @@ git diff --cached
   避免把随机答案交上去。接了 AI 兜底后覆盖率通常能到 100%，也就是**会真的自动交卷**，
   想稳一点可以把 `submit` 改成 `false`。
 - 网课小工具题库对**专业课**覆盖较差（实测某专业课 0/123 命中），
-  这类课程可以把 `provider` 改成 `TikuAnevol,AI` 省掉无谓的等待。
+  这类课程可以把 `provider` 里的题库都删掉，只留 `AI`，省掉无谓的等待。
 
 ---
 

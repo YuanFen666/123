@@ -115,9 +115,14 @@ def web_headers(referer: str = "") -> dict:
 
 def tune_tiku_for_exam(tiku) -> None:
     """
-    考试是按时间走的，题库链那套「防限流慢间隔」在这里反而害事
-    （每题 icodef 1.5s + ANEVOL 重试 + AI 3s，一道题能磨 5 秒以上）。
-    进考场前把这些间隔压到最小，交卷速度优先。
+    考试是按时间走的，题库链那套「防限流 + 耐心等」在这里反而害事。
+
+    实测慢在哪（用户日志）：
+        WARNING 网课小工具题库读超时 -> ReadTimeout(>15.0s)   ← 每题白等 15 秒
+        15 秒后才转下一个题库，整场 85 题就白扔 20 分钟
+    所以除了压小请求间隔，还要**把读超时也收紧**：
+        icodef  15s -> 4s      anevol 40s -> 6s      AI 30s -> 8s
+    超时即放弃、直接问下一个来源 —— 考试里"快速拿一个够用的答案"远好过"等一个完美的答案"。
     """
     if tiku is None:
         return
@@ -128,11 +133,19 @@ def tune_tiku_for_exam(tiku) -> None:
         name = type(p).__name__
         if name == "TikuIcodef":
             p.min_interval = 0.3
+            p.read_timeout = 4
         elif name == "AI":
             p.min_interval_seconds = 0.3
+            p.read_timeout = 8
         elif name == "TikuAnevol":
             p.min_interval = 0.2
-        logger.debug("考试模式：已把 {} 的请求间隔调小".format(name))
+            try:
+                # ANEVOL 的读超时是模块级常量（在请求处直接读），只能改全局
+                import api.answer as _ans
+                _ans._ANEVOL_READ_TIMEOUT = 6
+            except Exception:  # noqa: BLE001
+                pass
+        logger.debug("考试模式：已收紧 {} 的请求间隔与超时".format(name))
 
 
 def get_ts() -> str:

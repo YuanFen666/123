@@ -160,6 +160,88 @@ class CacheDAO:
             self._write_cache(data)
 
 
+class AnswerKeyDAO(CacheDAO):
+    """
+    「正确答案库」—— 只存**已核验为正确**的题目答案，与 cache.json 分开。
+
+    两者的可信度完全不同，所以必须分开存：
+
+        cache.json       存"我们答过的"（题库猜的、AI 猜的都可能），作用只是省一次查询
+        answer_key.json  存"确认对的"（来自测验/考试批改页，或人工导入）
+
+    查询顺序： **正确答案库 -> cache.json -> 题库链/AI**
+    命中正确答案库 = 不花钱、不走网络、而且可信。
+
+    为什么单开一个文件：cache.json 里难免有错答案；答案库一旦被错答案污染就失去意义。
+    所以答案库**只从可信来源写入**（批改页导入 / 手动导入），
+    题库和 AI 的猜测永远不会写进来。
+    """
+
+    DEFAULT_CACHE_FILE = "answer_key.json"
+
+    def __init__(self, file: str = None):
+        # 【坑】父类的签名是 __init__(self, file=DEFAULT_CACHE_FILE)，
+        # 那个默认值在**父类定义时**就绑定死了，子类改 DEFAULT_CACHE_FILE 根本不起作用 ——
+        # 结果就是答案库也写进 cache.json，两个库互相污染（自测当场抓到）。
+        # 所以这里必须显式把默认值传下去。
+        super().__init__(file or self.DEFAULT_CACHE_FILE)
+
+    def add_cache(self, question: str, answer: str, source: str = "") -> None:
+        """写入一条已核验答案（source 仅用于日志追溯）。"""
+        question = (question or "").strip()
+        answer = (answer or "").strip()
+        if not question or not answer:
+            return
+        with self._lock:
+            data = self._read_cache()
+            if data.get(question) == answer:
+                return
+            data[question] = answer
+            self._write_cache(data)
+        if source:
+            logger.debug("正确答案库写入（{}）：{} -> {}".format(source, question[:40], answer))
+
+
+_ANSWER_KEY_LOCK = threading.RLock()
+_answer_key_dao: Optional[AnswerKeyDAO] = None
+
+
+def normalize_title(title: str) -> str:
+    """
+    把题干归一化成「查询 / 存储共用」的键。
+
+    【为什么必须由一个函数统一负责】
+    题库链查询时的题干、缓存 cache.json 的键、正确答案库 answer_key.json 的键，
+    必须是同一个形式，否则永远对不上。实测见过的几种装饰：
+        1【判断题】xxx            （考试页）
+        （单选题, 2.0分）xxx      （批改页，标记在**中间**，原来的两条 sub 根本去不掉）
+        1. xxx（2.0分）           （章节测验）
+    导出脚本 import 这一个函数，就不会出现"导入的键和查询的键不一样、
+    答案库看着有数据却永远命中不了"这种问题（第一版导入器就踩了这个坑）。
+    """
+    t = str(title or "")
+    # 先把 【判断题】 这类标记换成占位符，这样 "1【判断题】xxx" 能整体识别成「题号+标记」，
+    # 否则先删标记会得到 "1xxx"，题号就再也去不掉了（考试页就是这个形式）。
+    t = sub(r'【\s*(?:单选题|多选题|判断题|填空题|简答题)\s*】', '\x00', t)
+    t = sub(r'[（(]\s*(?:单选题|多选题|判断题|填空题|简答题|不定项选择题)'
+            r'\s*[,，]?\s*[\d.]*\s*分?\s*[)）]', '\x00', t)
+    t = sub(r'^\s*\d{1,3}\s*[.、,，)）:：]?\s*\x00\s*', '', t)              # 题号+标记一起去
+    t = sub(r'^\s*\d{1,3}\s*[.、,，)）:：]\s*', '', t)                       # 单个题号
+    t = t.replace('\x00', '')                                               # 剩下的标记去掉
+    t = sub(r'[（(]\s*[\d.]+\s*分\s*[)）]\s*$', '', t)                       # 去结尾 "(2.0分)"
+    return t.strip()
+
+
+def answer_key() -> AnswerKeyDAO:
+    """正确答案库的单例（懒加载，避免 import 时就碰文件系统）。"""
+    global _answer_key_dao
+    if _answer_key_dao is None:
+        with _ANSWER_KEY_LOCK:
+            if _answer_key_dao is None:
+                _answer_key_dao = AnswerKeyDAO()
+    return _answer_key_dao
+
+
 # TODO: 重构此部分代码，将此类改为抽象类，加载题库方法改为静态方法，禁止直接初始化此类
 class Tiku:
     CONFIG_PATH = os.path.join(os.getcwd(), "config.ini")  # TODO: 从运行参数中获取config路径
@@ -237,21 +319,38 @@ class Tiku:
 
         # 预处理, 去除【单选题】这样与标题无关的字段
         logger.debug(f"原始标题：{q_info['title']}")
-        # 去题号："1. xxx" / "12、xxx" / "3) xxx"。
-        # 原版是 ^\d+ ，会把 "1+1等于几？" 削成 "+1等于几？"、"1921年..." 削成 "年..."，
-        # 题干直接变形导致搜不到。这里要求「数字后面必须跟标点」且数字不超过 3 位，
-        # 既保留去题号的能力，又不会吃掉题干里的年份和算式。
-        q_info['title'] = sub(r'^\s*\d{1,3}\s*[.、,，)）:：]\s*', '', q_info['title'])
-        q_info['title'] = sub(r'（\d+\.\d+分）$', '', q_info['title'])
+        # 归一化：题号 /【判断题】/（单选题, 2.0分）/ 结尾分值，统一由 normalize_title 负责，
+        # 保证与 answer_key.json、cache.json 的键形式一致。
+        _legacy_title = q_info['title']
+        q_info['title'] = normalize_title(q_info['title'])
         logger.debug(f"处理后标题：{q_info['title']}")
+        # 老缓存里存的是旧归一化形式（没去题型标记），读的时候两个键都试一下，
+        # 避免升级后已有的缓存全部命中不了
+        _lookup_titles = [q_info['title']]
+        if _legacy_title != q_info['title']:
+            _lookup_titles.append(_legacy_title)
 
-        # 先过缓存
+        # 【最优先】正确答案库：已核验过的答案 —— 不花钱、不走网络、而且可信
+        try:
+            _ak = answer_key()
+            for _k in _lookup_titles:
+                correct = _ak.get_cache(_k)
+                if correct:
+                    logger.info("从「正确答案库」命中（已核验）：{} -> {}".format(_k, correct))
+                    return correct.strip()
+        except Exception as _e:  # noqa: BLE001
+            logger.debug("正确答案库读取失败 -> {}".format(_e))
+
+        # 再先过缓存
         cache_dao = CacheDAO()
-        answer = cache_dao.get_cache(q_info['title'])
-        if answer:
-            logger.info(f"从缓存中获取答案：{q_info['title']} -> {answer}")
-            return answer.strip()
-        else:
+        answer = None
+        for _k in _lookup_titles:
+            answer = cache_dao.get_cache(_k)
+            if answer:
+                logger.info(f"从缓存中获取答案：{_k} -> {answer}")
+                return answer.strip()
+
+        if True:
             answer = self._query(q_info)
             if answer:
                 answer = answer.strip()
@@ -981,7 +1080,9 @@ class SiliconFlow(Tiku):
                 self.api_endpoint,
                 headers=headers,
                 json=payload,
-                timeout=30
+                # 读超时可被考试模式收紧（tune_tiku_for_exam 会调小它）：
+                # 考试有时间压力，"快速失败换下一个来源"胜过"干等一个大模型"
+                timeout=getattr(self, "read_timeout", 30)
             )
             self.last_request_time = time.time()
 

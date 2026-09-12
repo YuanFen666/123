@@ -344,7 +344,8 @@ def init_config():
     return common_config, tiku_config, notification_config
 
 
-def take_exams(watch, exams, courses, tiku, auto_submit: bool, openc: str = "") -> None:
+def take_exams(watch, exams, courses, tiku, auto_submit: bool, openc: str = "",
+               max_exams: int = 1) -> None:
     """
     对「体检通过、现在能考」的考试执行自动作答。
 
@@ -373,6 +374,21 @@ def take_exams(watch, exams, courses, tiku, auto_submit: bool, openc: str = "") 
     if not todo:
         logger.info("没有需要作答的考试。")
         return
+
+    # 【只处理一场】每场考试都会消耗一次机会、进考场就开始计时，
+    # 所以默认一场跑完就停，绝不自动接着考下一门（配置 exam_take_max 可调）。
+    # 实测踩过：答完中国商贸文化并交卷后，程序又自动去动中华文化才艺，
+    # 虽然那场已交卷、被安全闸门拦下没造成损失，但这种"顺手多做一件事"不该发生。
+    try:
+        _max = int(max_exams) if max_exams else 1
+    except (TypeError, ValueError):
+        _max = 1
+    if _max < 1:
+        _max = 1
+    if len(todo) > _max:
+        logger.warning("待做考试有 {} 场，本次只处理前 {} 场（每场都会消耗一次机会，"
+                       "不自动接着考下一门）；需要继续请再运行一次。".format(len(todo), _max))
+    todo = todo[:_max]
 
     # 二次确认：这是不可逆操作（考试通常只有一次机会）
     logger.warning("=" * 90)
@@ -839,7 +855,8 @@ def main():
                 logger.info("考试模式：进入考场自动作答。")
                 take_exams(_watch, _exams, course_task or all_course, chaoxing.tiku,
                            auto_submit=bool(common_config.get("_exam_submit")),
-                           openc=str(common_config.get("exam_openc") or ""))
+                           openc=str(common_config.get("exam_openc") or ""),
+                           max_exams=int(common_config.get("exam_take_max", 1) or 1))
             else:
                 logger.info("考试模式：只做考试看板与就绪体检（只读），不进入考场。")
             return
