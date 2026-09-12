@@ -19,7 +19,7 @@
 #>
 param(
     [switch]$Push,
-    [string]$RepoUrl = "https://github.com/YuanFen666/123.git",
+    [string]$RepoUrl = "https://github.com/YuanFen666/chaoxing-fixed.git",
     [string]$Message = ""
 )
 
