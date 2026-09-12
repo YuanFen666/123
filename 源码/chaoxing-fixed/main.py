@@ -280,7 +280,9 @@ def load_config_from_file(config_path):
     accounts = load_accounts(config)
     if accounts:
         common_config["accounts"] = accounts
-        logger.info("config.ini 里读到了 {} 组账号".format(len(accounts)))
+        # 用 debug 级别：--list-accounts 会被 bat 反复拉起，
+        # 用 info 会在选择菜单上方留下一行突兀的日志。
+        logger.debug("config.ini 里读到了 {} 组账号".format(len(accounts)))
 
     return common_config, tiku_config, notification_config
 

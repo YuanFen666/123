@@ -48,19 +48,35 @@ for /f "usebackq tokens=1,2 delims=|" %%a in (`""%EXE%" -c "%CFG%" --list-accoun
     set /a NACC+=1
     set "ACC%%a=%%b"
 )
+rem 第一步：选登录账号（先登录，再选模式）
+set "ACCSHOW=!ACC1!"
 if !NACC! GTR 1 (
     cls
     echo.
     echo  ================================================================
-    echo    检测到 !NACC! 组账号，请选择本次要登录的：
+    echo    第一步：请选择要登录的账号
     echo  ================================================================
+    echo    本次运行（刷课或考试）都会使用你选中的这个账号：
+    echo.
     for /l %%i in (1,1,!NACC!) do echo     [%%i] !ACC%%i!
     echo  ================================================================
     echo.
     set "ACCPICK="
     set /p "ACCPICK=请输入账号编号后回车（直接回车=第 1 个）: "
-    if defined ACCPICK set "ACCOUNT_ARG=--account-index !ACCPICK!"
+    if defined ACCPICK (
+        call set "V=%%ACC!ACCPICK!%%"
+        if defined V (
+            set "ACCOUNT_ARG=--account-index !ACCPICK!"
+            set "ACCSHOW=!V!"
+        ) else (
+            echo.
+            echo   编号无效，使用第 1 个账号。
+            ping -n 2 127.0.0.1 >nul
+        )
+    )
 )
+if !NACC! EQU 1 echo    当前账号：!ACCSHOW!  ^(config.ini 里只有一组^)
+
 
 :MENU
 cls
@@ -68,6 +84,9 @@ echo.
 echo  ================================================================
 echo    chaoxing 修复版   一键启动
 echo  ================================================================
+echo    当前账号：!ACCSHOW!
+echo  ----------------------------------------------------------------
+echo    第二步：请选择要做什么
 echo     [1] 视频 + 章节答题模式
 echo         刷课：视频 / 文档 / 阅读 / 章节测验（自动查题作答）
 echo.
