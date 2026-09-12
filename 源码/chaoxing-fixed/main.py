@@ -137,6 +137,69 @@ def parse_args():
     return parser.parse_args()
 
 
+def load_accounts(config) -> list:
+    """
+    读取 [accounts] 段里的多组账号。
+
+    写法（一行一个账号，key 是手机号，value 是密码）：
+        [accounts]
+        13800000000 = 密码A
+        13800138000 = 密码B
+
+    用 key/value 而不是 "账号:密码" 拼接，是为了不受密码里含逗号/冒号/等号的影响。
+    返回 [(用户名, 密码), ...]；没有这个段就返回空列表（继续用 [common] 里的单账号）。
+    """
+    accounts = []
+    if config.has_section("accounts"):
+        for user, pwd in config.items("accounts"):
+            user, pwd = (user or "").strip(), (pwd or "").strip()
+            if user and pwd:
+                accounts.append((user, pwd))
+    return accounts
+
+
+def mask_account(user: str) -> str:
+    """手机号打码，用于在菜单/日志里显示。"""
+    user = str(user or "")
+    if len(user) >= 7:
+        return "{}****{}".format(user[:3], user[-2:])
+    return (user[:2] + "***") if user else "?"
+
+
+def choose_account(accounts: list):
+    """
+    多账号时让用户选一个；只有一组就直接用。
+
+    非交互场景（stdin 被重定向或已读完）会退回到第一个账号并写日志，
+    绝不把无人值守的运行卡住。
+    """
+    if not accounts:
+        return None, None
+    if len(accounts) == 1:
+        logger.info("使用 config.ini 里的账号: {}".format(mask_account(accounts[0][0])))
+        return accounts[0]
+
+    print("")
+    print("=" * 60)
+    print(" config.ini 里配置了 {} 组账号，请选择本次要登录的：".format(len(accounts)))
+    for i, (user, _) in enumerate(accounts, 1):
+        print("   [{}] {}".format(i, mask_account(user)))
+    print("=" * 60)
+    while True:
+        try:
+            raw = input("请输入编号后回车（直接回车=第 1 个）: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            logger.warning("无法交互选择账号，默认使用第 1 个: {}".format(mask_account(accounts[0][0])))
+            return accounts[0]
+        if not raw:
+            return accounts[0]
+        if raw.isdigit() and 1 <= int(raw) <= len(accounts):
+            user, pwd = accounts[int(raw) - 1]
+            logger.info("已选择账号: {}".format(mask_account(user)))
+            return user, pwd
+        print("  编号不对，请重新输入（1~{}）".format(len(accounts)))
+
+
 def load_config_from_file(config_path):
     """从配置文件加载设置"""
     config = configparser.ConfigParser()
@@ -181,7 +244,13 @@ def load_config_from_file(config_path):
     # 检查并读取notification节
     if config.has_section("notification"):
         notification_config = dict(config.items("notification"))
-    
+
+    # 多账号：[accounts] 段（可选）。没有就用 [common] 里的单账号。
+    accounts = load_accounts(config)
+    if accounts:
+        common_config["accounts"] = accounts
+        logger.info("config.ini 里读到了 {} 组账号".format(len(accounts)))
+
     return common_config, tiku_config, notification_config
 
 
@@ -302,7 +371,15 @@ def init_chaoxing(common_config, tiku_config):
     username = common_config.get("username", "")
     password = common_config.get("password", "")
     use_cookies = common_config.get("use_cookies", False)
-    
+
+    # ---- 多账号支持 ----
+    # [accounts] 段里配了多组就让你选；只配了一组（或只有 [common] 的单账号）直接登录。
+    accounts = list(common_config.get("accounts") or [])
+    if not accounts and username and password:
+        accounts = [(username, password)]
+    if accounts and not use_cookies:
+        username, password = choose_account(accounts)
+
     # 如果没有提供用户名密码，从命令行获取
     if (not username or not password) and not use_cookies:
         username = input("请输入你的手机号, 按回车确认\n手机号:")

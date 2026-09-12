@@ -82,8 +82,17 @@ if (Test-Path "$work\config.ini") {
         '; ============================================================================',
         ''
     )
+    $inAccounts = $false
     $body = Get-Content "$work\config.ini" -Encoding UTF8 | ForEach-Object {
-        if ($_ -match $blank) { "$($Matches[1]) = " } else { $_ }
+        $line = $_
+        # [accounts] 段每一行都是「手机号 = 密码」，必须整段抹掉 ——
+        # 只按 key 名（username/password/…）匹配是拦不住它的，会直接泄露真实账号密码。
+        if ($line -match '^\s*\[(.+?)\]\s*$') { $inAccounts = ($Matches[1] -eq 'accounts') }
+        if ($inAccounts -and $line -match '=' -and $line -notmatch '^\s*[;\[]') {
+            '# 13000000000 = 你的密码    ; <- 已移除，请自己填'
+        } elseif ($line -match $blank) {
+            "$($Matches[1]) = "
+        } else { $line }
     }
     Write-Utf8NoBom "$repoDir\config.ini.example" (($head + $body) -join "`r`n")
 }
