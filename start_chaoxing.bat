@@ -207,10 +207,10 @@ echo.
 echo   正在读取课程列表（需要登录，约几秒）...
 echo.
 set "N=0"
-for /f "usebackq tokens=1,2,3 delims=|" %%a in (`""%EXE%" -c "%CFG%" %ACCOUNT_ARG% --list-courses"`) do (
+for /f "usebackq tokens=1,2,3,4 delims=|" %%a in (`""%EXE%" -c "%CFG%" %ACCOUNT_ARG% --list-courses"`) do (
     set /a N+=1
     set "C%%a=%%c"
-    echo     [%%a] %%b
+    echo     [%%a] %%b	%%d
 )
 echo.
 if "!N!"=="0" (
@@ -222,6 +222,9 @@ if "!N!"=="0" (
     exit /b 0
 )
 echo     [0] 全部课程（共 !N! 门）
+echo.
+echo    ^(课程后面的「已完成/进行中」和分数来自学习进度页；
+echo     显示「?」表示没取到，不影响选择^)
 echo.
 set "PICK="
 set /p "PICK=请输入课程编号（多个用英文逗号分隔，直接回车=全部课程）: "

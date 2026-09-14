@@ -1,0 +1,8 @@
+{
+  "old1": "for /f \"usebackq tokens=1,2,3 delims=|\" %%a in (`\"\"%EXE%\" -c \"%CFG%\" %ACCOUNT_ARG% --list-courses\"`) do (",
+  "new1": "for /f \"usebackq tokens=1,2,3,4 delims=|\" %%a in (`\"\"%EXE%\" -c \"%CFG%\" %ACCOUNT_ARG% --list-courses\"`) do (",
+  "old2": "    echo     [%%a] %%b",
+  "new2": "    echo     [%%a] %%b\t%%d",
+  "old3": "echo     [0] 全部课程（共 !N! 门）",
+  "new3": "echo     [0] 全部课程（共 !N! 门）\r\necho.\r\necho    ^(课程后面的「已完成/进行中」和分数来自学习进度页；\r\necho     显示「?」表示没取到，不影响选择^)"
+}

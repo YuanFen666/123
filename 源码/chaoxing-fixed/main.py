@@ -816,10 +816,21 @@ def main():
                 sys.stdout.reconfigure(errors="replace")
             except Exception:  # noqa: BLE001
                 pass
+            # 每门课再补上「完成度 / 分数」，供启动脚本的选课界面显示。
+            # 取数要发 3 个请求（enc -> openc -> 进度页），有点慢，
+            # 所以任何一步失败都只让那一列变成 "?"，绝不影响前面的字段和整个菜单。
+            from api.base import SessionManager
+            from api.progress import get_course_progress, format_progress
             for _i, _c in enumerate(all_course, 1):
                 # 分隔符是 |，课程名里若含 | 或换行会破坏脚本的解析，先净化
                 _title = str(_c.get("title", "")).replace("|", "/").replace("\r", " ").replace("\n", " ")
-                print("{}|{}|{}".format(_i, _title, _c.get("courseId", "")), flush=True)
+                try:
+                    _st = format_progress(get_course_progress(SessionManager.get_session(), _c))
+                except Exception as _e:  # noqa: BLE001
+                    logger.debug("取进度失败 {} -> {}".format(_title, _e))
+                    _st = "?"
+                _st = str(_st).replace("|", "/").replace("\r", " ").replace("\n", " ")
+                print("{}|{}|{}|{}".format(_i, _title, _c.get("courseId", ""), _st), flush=True)
             return
 
         # 过滤要学习的课程（-l 指定的课程ID）
