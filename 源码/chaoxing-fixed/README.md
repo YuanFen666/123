@@ -1,5 +1,21 @@
 # :computer: 超星学习通自动化完成任务点(命令行版)
 
+---
+
+> ## ⭐ 用之前，先帮我点个 Star
+>
+> **[👉 点这里给项目点 Star](https://github.com/YuanFen666/chaoxing-fixed/stargazers)**
+>
+> 不点也**完全不影响使用**（功能一模一样，也不会弹窗拦你）——
+> 只是 star 数是这类工具唯一能被看到的"有用"信号，
+> 攒够了才有人愿意继续修 bug、跟平台的改版。
+>
+> 📌 **本项目基于 [Samueli924/chaoxing](https://github.com/Samueli924/chaoxing) 修改，
+> 遵循 GPL-3.0 协议**（见 [LICENSE](LICENSE)）。按 GPL 的要求，任何人都可以自由使用、
+> 修改和再分发，**我不会也不能附加任何使用限制** —— 所以上面的 star 是「请求」而不是「门槛」。
+
+---
+
 <p align="center">
     <a href="https://github.com/Samueli924/chaoxing" target="_blank" style="margin-right: 20px; font-style: normal; text-decoration: none;">
         <img src="https://img.shields.io/github/stars/Samueli924/chaoxing" alt="Github Stars" />

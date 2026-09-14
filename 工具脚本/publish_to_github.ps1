@@ -55,13 +55,23 @@ function Copy-Tree([string]$src, [string]$dst, [string[]]$xf) {
 }
 
 Write-Host "`n[1/4] 拷贝文件..." -ForegroundColor Green
+# LICENSE 必须随源码一起发：本项目沿用上游的 GPL-3.0（README 里已声明），
+# 用了 GPL 代码却不随附许可证 = 违反 GPL，GitHub 也会显示成「无许可证」。
+# 之前白名单漏了它，仓库一直是没有 LICENSE 的状态。
 Copy-Tree "$work\源码\chaoxing-fixed" "$repoDir\源码\chaoxing-fixed" `
     @('*.pyc', '*.log', 'cache.json', 'cookies.txt', 'config.ini', '*.exe')
 Copy-Tree "$work\源码\anevol-bridge" "$repoDir\源码\anevol-bridge" `
     @('*.pyc', '*.log', '*.exe', 'anevol_token.txt')
 Copy-Tree "$work\工具脚本" "$repoDir\工具脚本" @('*.pyc')
-foreach ($f in @('说明文档.md', 'README.md', '.gitignore', 'start_chaoxing.bat')) {
-    if (Test-Path "$work\$f") { Copy-Item "$work\$f" "$repoDir\$f" -Force }
+foreach ($f in @('说明文档.md', 'README.md', '.gitignore', 'start_chaoxing.bat',
+                 'LICENSE', '源码\chaoxing-fixed\LICENSE')) {
+    if (Test-Path "$work\$f") {
+        $dest = if ($f -like '*\*') { Join-Path $repoDir (Split-Path $f -Leaf) } else { Join-Path $repoDir $f }
+        Copy-Item "$work\$f" $dest -Force
+    }
+}
+if (-not (Test-Path "$repoDir\LICENSE")) {
+    Write-Warning "仓库根目录没有 LICENSE —— GPL-3.0 要求必须随附，请检查 $work\源码\chaoxing-fixed\LICENSE"
 }
 
 # 【重要】所有写出都必须用「无 BOM 的 UTF-8」：
