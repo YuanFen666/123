@@ -99,6 +99,10 @@ echo.
 echo     [3] 视频 + 章节答题 + 考试   一并完成
 echo         先刷课，全部跑完后接着把选中课程的考试也做掉
 echo.
+echo     [4] 视频 + 章节答题 + 考试   一并完成 + 自动交卷
+echo         同上，但答完直接提交，不再等你核对
+echo         ※ 每场只有一次提交机会，进考场即开始计时，确认再选
+echo.
 echo     [0] 退出
 echo  ================================================================
 echo.
@@ -108,6 +112,10 @@ set /p "MODE=请输入模式编号后回车: "
 if "%MODE%"=="1" goto PICK_VIDEO
 if "%MODE%"=="3" (
     set "EXTRA_ARG=--exam-take"
+    goto PICK_VIDEO
+)
+if "%MODE%"=="4" (
+    set "EXTRA_ARG=--exam-take --exam-submit"
     goto PICK_VIDEO
 )
 if "%MODE%"=="2" goto PICK_EXAM

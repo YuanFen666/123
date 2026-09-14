@@ -1,0 +1,6 @@
+{
+  "old1": "echo     [0] 退出",
+  "new1": "echo     [4] 视频 + 章节答题 + 考试   一并完成 + 自动交卷\r\necho         同上，但答完直接提交，不再等你核对\r\necho         ※ 每场只有一次提交机会，进考场即开始计时，确认再选\r\necho.\r\necho     [0] 退出",
+  "old2": "    if \"%MODE%\"==\"2\" goto PICK_EXAM",
+  "new2": "    if \"%MODE%\"==\"4\" (\r\n        set \"EXTRA_ARG=--exam-take --exam-submit\"\r\n        goto PICK_VIDEO\r\n    )\r\n    if \"%MODE%\"==\"2\" goto PICK_EXAM"
+}

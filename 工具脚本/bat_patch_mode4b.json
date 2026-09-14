@@ -1,0 +1,4 @@
+{
+  "old1": "if \"%MODE%\"==\"2\" goto PICK_EXAM",
+  "new1": "if \"%MODE%\"==\"4\" (\r\n    set \"EXTRA_ARG=--exam-take --exam-submit\"\r\n    goto PICK_VIDEO\r\n)\r\nif \"%MODE%\"==\"2\" goto PICK_EXAM"
+}
