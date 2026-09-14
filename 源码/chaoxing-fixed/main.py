@@ -375,20 +375,18 @@ def take_exams(watch, exams, courses, tiku, auto_submit: bool, openc: str = "",
         logger.info("没有需要作答的考试。")
         return
 
-    # 【只处理一场】每场考试都会消耗一次机会、进考场就开始计时，
-    # 所以默认一场跑完就停，绝不自动接着考下一门（配置 exam_take_max 可调）。
-    # 实测踩过：答完中国商贸文化并交卷后，程序又自动去动中华文化才艺，
-    # 虽然那场已交卷、被安全闸门拦下没造成损失，但这种"顺手多做一件事"不该发生。
+    # 每场考试都会消耗一次机会、进考场就开始计时，所以默认只处理一场。
+    # max_exams <= 0 表示**不限制**（把选中课程的考试全都做掉）—— 合并模式就是这么调的。
     try:
-        _max = int(max_exams) if max_exams else 1
+        _max = int(max_exams)
     except (TypeError, ValueError):
         _max = 1
-    if _max < 1:
-        _max = 1
-    if len(todo) > _max:
+    if _max > 0 and len(todo) > _max:
         logger.warning("待做考试有 {} 场，本次只处理前 {} 场（每场都会消耗一次机会，"
                        "不自动接着考下一门）；需要继续请再运行一次。".format(len(todo), _max))
-    todo = todo[:_max]
+        todo = todo[:_max]
+    elif _max <= 0:
+        logger.info("待做考试 {} 场，按「不限制」全部处理".format(len(todo)))
 
     # 二次确认：这是不可逆操作（考试通常只有一次机会）
     logger.warning("=" * 90)
@@ -868,6 +866,21 @@ def main():
         
         logger.info("所有课程学习任务已完成")
         notification.send("chaoxing : 所有课程学习任务已完成")
+
+        # --- 合并模式：刷课全部跑完后，接着把考试也做掉 ---
+        # 触发条件就是「给了 --exam-take 但没给 --exam-only」——
+        # 不需要新参数：考试模式是"只考试"，合并模式是"刷课+考试一起"。
+        # 注意两档的考试场数上限不同：
+        #   考试模式   用 exam_take_max（默认 1，一场就跑，避免误考下一门）
+        #   合并模式   默认**全部**（用户明确选了"一并进行"，就是要把选中的课都考完）
+        if common_config.get("_exam_take"):
+            logger.info("=" * 90)
+            logger.info("刷课全部完成，接着处理考试（合并模式）")
+            logger.info("=" * 90)
+            take_exams(_watch, _exams, course_task or all_course, chaoxing.tiku,
+                       auto_submit=bool(common_config.get("_exam_submit")),
+                       openc=str(common_config.get("exam_openc") or ""),
+                       max_exams=0)   # 0 = 不限制，选中课程的考试全做
         
     except SystemExit as e:
         if e.code != 0:
