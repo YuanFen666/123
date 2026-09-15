@@ -54,6 +54,16 @@ EXAM_SUBMIT = "https://mooc1.chaoxing.com/exam-ans/exam/test/reVersionSubmitTest
 # 参考实现（CxKitty）只实现了单题模式，所以这套字段是从真实抓包里对出来的。
 EXAM_PREVIEW_SAVE = "https://mooc1.chaoxing.com/exam-ans/exam/test/preview-save"
 EXAM_MOOC2_PREVIEW = "https://mooc1.chaoxing.com/exam-ans/mooc2/exam/preview"
+
+# 滑块验证码自动识别的最多尝试次数。
+# 【为什么是 8】chaoxing 的背景图里有**干扰项**（真实缺口和干扰项形状一样、
+# 只有明暗/清晰度不同），纯算法匹配会偶尔跑偏；而**同一张验证码只能校验一次**
+# （实测第二次就返回 error:1 verification error），所以每失败一次必须换新图。
+# 单次成功率哪怕只有 0.4，8 次也有 98% 以上。
+# 全部失败后还有人工兜底（见 SlideCaptcha._manual_fallback）。
+# 【注意】必须在 SlideCaptcha 类**之前**定义 —— 它被用作 solve() 的默认参数值，
+# 类定义时就会求值，放后面会 NameError（这个坑刚踩过）。
+CAPTCHA_MAX_TRY = 8
 # 整卷模式的签名参数里还有一堆固定为 undefined 的占位
 _PREVIEW_SIGN_PLACEHOLDERS = ("_signcode", "_signc", "_signe", "_signk",
                               "_cxcid", "_cxtime", "_signt")
@@ -211,6 +221,7 @@ class SlideCaptcha:
         self.server_time = 0
         self.iv = ""
         self.token = ""
+        self._last_bg_width = 0     # 最近一张背景图的宽度（人工兜底时提示用）
 
     @staticmethod
     def _parse_callback(text: str) -> dict:
@@ -253,6 +264,12 @@ class SlideCaptcha:
         cutout = self.session.get(cutout_url, headers={"Referer": self.referer}, timeout=20).content
         if not shade or not cutout:
             raise RuntimeError("验证码图片下载为空")
+        try:
+            import io
+            from PIL import Image
+            self._last_bg_width = Image.open(io.BytesIO(shade)).size[0]
+        except Exception:  # noqa: BLE001
+            self._last_bg_width = 0
         return shade, cutout
 
     def _match(self, shade: bytes, cutout: bytes) -> int:
@@ -331,9 +348,87 @@ class SlideCaptcha:
             return ""
         raise RuntimeError("验证码校验未通过: {}".format(str(data)[:120]))
 
-    def solve(self, max_try: int = 3) -> str:
+    def _save_fail_image(self, shade: bytes, tag: str = "") -> str:
+        """
+        验证码失败时把背景图存下来 —— 失败原因里"匹配跑偏"占大头，
+        留着图才能复盘；也是人工兜底时要给人看的那张图。
+        """
+        try:
+            import io
+            import os
+            from PIL import Image
+            d = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "logs")
+            d = os.path.abspath(d)
+            os.makedirs(d, exist_ok=True)
+            p = os.path.join(d, "captcha_fail_{}{}.png".format(
+                time.strftime("%Y%m%d_%H%M%S"), tag))
+            Image.open(io.BytesIO(shade)).save(p)
+            return p
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _manual_fallback(self, last_error, max_try: int) -> str:
+        """
+        自动识别全部失败后的人工兜底。
+
+        【为什么值得做】chaoxing 的背景图里有**干扰项**：真实缺口和干扰项形状一样、
+        只有明暗/清晰度不同。纯算法匹配会偶尔跑偏，而**同一张验证码只能校验一次**
+        （实测第二次就返回 error:1 verification error），所以只能换新图重试。
+        重试若干次仍不过时，与其直接报错退出，不如把图交给用户看一眼 ——
+        人眼认这个缺口几乎不会错。
+
+        交互式终端里：取一张新图 → 存盘 → 提示路径 → 让用户输入 x → 校验。
+        非交互（无人值守）：只存图 + 明确报错，绝不静默卡在等输入上。
+        """
+        import sys
+        shade, _cutout = None, None
+        try:
+            shade, _cutout = self._get_images()
+        except Exception:  # noqa: BLE001
+            pass
+        path = self._save_fail_image(shade, "_manual") if shade else ""
+        tip = ("滑块验证码自动识别 {} 次都没过（最后一次：{}）".format(max_try, last_error))
+        if path:
+            tip += "\n     失败时的背景图已存到：{}".format(path)
+        if not (getattr(sys.stdin, "isatty", lambda: False)() and getattr(sys.stdout, "isatty", lambda: False)()):
+            raise RuntimeError(tip + "\n     （非交互环境，无法人工兜底；重跑一次通常能碰上好认的图）")
+        if not shade:
+            raise RuntimeError(tip + "\n     （也没取到新验证码图，无法人工兜底）")
+        logger.warning(tip)
+        logger.warning("     现在换成人工识别：请打开上面那张图，看缺口离左边多少像素。")
+        logger.warning("     图片宽度 {} 像素，输入 0~{} 之间的整数即可（直接回车=放弃）。".format(
+            self._last_bg_width or 320, max(0, (self._last_bg_width or 320) - 1)))
+        for _ in range(3):
+            try:
+                raw = input("     请输入缺口 x 坐标: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                raise RuntimeError("人工兜底被中断")
+            if not raw:
+                raise RuntimeError("人工兜底放弃（回车）")
+            try:
+                x = int(raw)
+            except ValueError:
+                logger.warning("     请输入整数。")
+                continue
+            try:
+                v = self._check(x)
+                logger.info("人工输入的 x={} 通过了验证码".format(x))
+                return v
+            except Exception as e:  # noqa: BLE001
+                logger.warning("     x={} 没通过（{}）；本张图已作废，再取一张重来。".format(x, e))
+                try:
+                    shade, _cutout = self._get_images()
+                    path = self._save_fail_image(shade, "_manual2")
+                    if path:
+                        logger.warning("     新图已存到：{}".format(path))
+                except Exception:  # noqa: BLE001
+                    pass
+        raise RuntimeError("人工兜底也失败了")
+
+    def solve(self, max_try: int = CAPTCHA_MAX_TRY) -> str:
         self._get_server_time()
         last = None
+        shade = None
         for i in range(max_try):
             try:
                 shade, cutout = self._get_images()
@@ -343,8 +438,10 @@ class SlideCaptcha:
             except Exception as e:  # noqa: BLE001
                 last = e
                 logger.warning("滑块验证码第 {} 次未通过 -> {}".format(i + 1, e))
+                if shade:
+                    self._save_fail_image(shade, "_try{}".format(i + 1))
                 time.sleep(1.0)
-        raise RuntimeError("滑块验证码连续 {} 次失败: {}".format(max_try, last))
+        return self._manual_fallback(last, max_try)
 
 
 # ---------------------------------------------------------------------------
@@ -376,6 +473,107 @@ class ExamQuestion:
 
 def _remove_escape(text: str) -> str:
     return (text or "").replace("\xa0", " ").replace("\u2002", "").replace("\u200b", "").replace("\u3000", "").strip()
+
+
+# ============================================================
+#  考试门槛：等「服务端统计」追上来
+# ============================================================
+# 【为什么需要这个】实测（2026-09-15，账号 #3）：
+#   刷完一门课的全部任务点后，进度页**立刻**显示 100%，
+#   但紧接着进考场却被拒：「该考试教师已设置章节任务点未完成90%，不能参加考试」。
+#   过一段时间再做「就绪体检」，同一场考试变成 √ 可以考试。
+#   → 进度页和考试门槛读的**不是同一个值**：进度页实时，门槛用的是服务端的
+#     任务点聚合缓存，汇总有延迟（几分钟到几十分钟）。
+#
+# 【所以做法】门槛被拒时不要直接放弃，而是**隔一会儿重新探测门槛本身**
+#   （用门槛做探测比等固定时间准 —— 因为它才是权威判断），追上了就自动开考。
+#
+# 【必须区分】「任务点没到」是可恢复的；「已交卷 / 已过期 / 要人脸」是永久性的，
+#   等多久都没用，绝不能傻等（会白白占掉几十分钟）。
+
+# 可恢复：等一等服务端统计就会好
+_GATE_TRANSIENT_WORDS = (
+    "任务点", "章节", "完成度", "未完成", "未达标", "不足", "未满足",
+)
+# 永久性：怎么等都不会变（**优先级高于上面**）
+_GATE_PERMANENT_WORDS = (
+    "已交卷", "已交过卷", "已过期", "已结束", "已批阅", "待批阅",
+    "人脸", "已经完成", "已完成", "不允许", "没有权限", "不存在",
+)
+
+
+def is_transient_gate_reason(reason: str) -> bool:
+    """
+    这个「不能考」的原因，是不是「等一等就会好」的那类？
+
+    只认「任务点/章节完成度没到」——那是服务端统计延迟造成的，可恢复。
+    已交卷 / 已过期 / 要人脸 等一律返回 False，避免无谓的长等待。
+    """
+    r = _remove_escape(reason or "")
+    if not r:
+        return False
+    for w in _GATE_PERMANENT_WORDS:
+        if w in r:
+            return False
+    for w in _GATE_TRANSIENT_WORDS:
+        if w in r:
+            return True
+    return False
+
+
+def wait_for_gate(probe, exam, max_wait: float, poll: float, log=None):
+    """
+    反复探测考试门槛，直到可以考或超出预算。
+
+    probe : 无参可调用，返回带 .can_start / .reason 的对象（就是 ExamBoard.probe 的偏函数）
+    exam  : 用于日志的考试对象（取 .name）
+    max_wait : 最长等待秒数；<=0 表示不等待（立刻返回最后一次结果）
+    poll  : 每次探测的间隔秒数
+    返回最后一次的 probe() 结果；一次都没探到就返回 None。
+
+    **任何异常都吃掉**：这只是"多等一会儿"，绝不能因为它把整个流程搞挂。
+    """
+    import time as _time
+
+    def _log(msg):
+        if log:
+            try:
+                log(msg)
+            except Exception:  # noqa: BLE001
+                pass
+
+    name = getattr(exam, "name", "?")
+    last = None
+    if max_wait <= 0 or poll <= 0:
+        try:
+            return probe()
+        except Exception:  # noqa: BLE001
+            return None
+
+    _time_start = _time.time()
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            last = probe()
+        except Exception as ex:  # noqa: BLE001
+            _log("《{}》第 {} 次探测门槛失败（忽略，继续等）：{}: {}".format(
+                name, attempt, type(ex).__name__, ex))
+            last = None
+        if last is not None and getattr(last, "can_start", False):
+            waited = _time.time() - _time_start
+            _log("《{}》门槛已通过（等了 {:.0f} 秒，第 {} 次探测）—— 服务端统计追上来了，继续开考".format(
+                name, waited, attempt))
+            return last
+        elapsed = _time.time() - _time_start
+        if elapsed + poll > max_wait:
+            _log("《{}》等待预算用尽（已等 {:.0f} 秒 / 上限 {:.0f} 秒），本次放弃这场考试".format(
+                name, elapsed, max_wait))
+            return last
+        reason = getattr(last, "reason", "") if last is not None else ""
+        _log("《{}》还不能考（{}）；已等 {:.0f} 秒，{} 秒后再探测一次（上限 {:.0f} 秒）".format(
+            name, reason or "未通过", elapsed, int(poll), max_wait))
+        _time.sleep(poll)
 
 
 def parse_preview_question(node, index: int = 0) -> ExamQuestion:

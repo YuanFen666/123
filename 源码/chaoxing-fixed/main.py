@@ -344,8 +344,35 @@ def init_config():
     return common_config, tiku_config, notification_config
 
 
+def _cfg_seconds(conf, key: str, default: float) -> float:
+    """
+    从配置里读一个「秒数」。
+
+    **绝对不能用 `conf.get(key) or default`** —— 0 是这里的合法值
+    （exam_gate_wait = 0 表示「不要等待」），而 `0 or 1800` 会变成 1800。
+    这个坑在 exam_take_max 上已经踩过一次，这里显式解析。
+    """
+    raw = conf.get(key, default)
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return float(default)
+    return v if v >= 0 else 0.0
+
+
+def _gate_wait(conf) -> float:
+    """考试门槛（章节任务点）没到时的最长等待秒数，默认 30 分钟。"""
+    return _cfg_seconds(conf, "exam_gate_wait", 1800)
+
+
+def _gate_poll(conf) -> float:
+    """等待期间重新探测门槛的间隔秒数，默认 2 分钟；下限 10 秒（探测太密没意义）。"""
+    v = _cfg_seconds(conf, "exam_gate_poll", 120)
+    return v if v >= 10 else 10.0
+
+
 def take_exams(watch, exams, courses, tiku, auto_submit: bool, openc: str = "",
-               max_exams: int = 1) -> None:
+               max_exams: int = 1, gate_wait: float = 1800, gate_poll: float = 120) -> None:
     """
     对「体检通过、现在能考」的考试执行自动作答。
 
@@ -354,7 +381,7 @@ def take_exams(watch, exams, courses, tiku, auto_submit: bool, openc: str = "",
       - 服务器上已有答案的题默认跳过，不覆盖；
       - 开考后任何异常都会反复提示「请立即手动完成考试」。
     """
-    from api.exam_take import ExamTaker, ExamAborted
+    from api.exam_take import ExamTaker, ExamAborted, is_transient_gate_reason, wait_for_gate
 
     # ---- 使用前的说明（只提示，不阻断）----
     logger.info("=" * 90)
@@ -397,13 +424,29 @@ def take_exams(watch, exams, courses, tiku, auto_submit: bool, openc: str = "",
     ready = getattr(watch, "last_ready", None) or {}
     for e in todo:
         r = ready.get(e.exam_id)
-        if r is not None and not r.can_start:
-            logger.warning("跳过《{}》：{}".format(e.name, r.reason or "就绪体检未通过"))
-            continue
         course = by_course.get(e.course_id)
         if not course:
             logger.warning("跳过《{}》：找不到对应课程信息".format(e.name))
             continue
+        if r is not None and not r.can_start:
+            # 【关键】「章节任务点未完成」不是永久拒绝，而是**服务端的统计还没汇总到**
+            # —— 刷完课进度页立刻是 100%，但门槛读的是另一个聚合缓存，有几分钟到几十分钟延迟。
+            # 所以这里自己轮询门槛（拿门槛当探测，比等固定时间准），追上了就自动开考，
+            # 不需要人再启动一次程序。
+            if gate_wait > 0 and is_transient_gate_reason(r.reason):
+                logger.info("《{}》被门槛拦下：{}".format(e.name, r.reason))
+                logger.info("     这是服务端统计延迟（进度页实时、门槛用聚合缓存），"
+                            "程序将每 {} 秒重新探测一次，最多等 {} 分钟 —— 通过后自动接着考。".format(
+                                int(gate_poll), int(gate_wait // 60)))
+                r = wait_for_gate(
+                    lambda c=course, ex=e: watch.probe(c, ex),
+                    e, gate_wait, gate_poll,
+                    log=lambda m: logger.info("     " + m))
+            if r is None or not r.can_start:
+                logger.warning("跳过《{}》：{}".format(
+                    e.name, (getattr(r, "reason", "") or "就绪体检未通过")))
+                continue
+            logger.info("《{}》门槛已通过，继续开考。".format(e.name))
         taker = ExamTaker(course, e, tiku, auto_submit=auto_submit, openc=openc)
         try:
             taker.run()
@@ -865,7 +908,9 @@ def main():
                 take_exams(_watch, _exams, course_task or all_course, chaoxing.tiku,
                            auto_submit=bool(common_config.get("_exam_submit")),
                            openc=str(common_config.get("exam_openc") or ""),
-                           max_exams=int(common_config.get("exam_take_max", 1) or 1))
+                           max_exams=int(common_config.get("exam_take_max", 1) or 1),
+                           gate_wait=_gate_wait(common_config),
+                           gate_poll=_gate_poll(common_config))
             else:
                 logger.info("考试模式：只做考试看板与就绪体检（只读），不进入考场。")
             return
@@ -891,7 +936,9 @@ def main():
             take_exams(_watch, _exams, course_task or all_course, chaoxing.tiku,
                        auto_submit=bool(common_config.get("_exam_submit")),
                        openc=str(common_config.get("exam_openc") or ""),
-                       max_exams=0)   # 0 = 不限制，选中课程的考试全做
+                       max_exams=0,   # 0 = 不限制，选中课程的考试全做
+                       gate_wait=_gate_wait(common_config),
+                       gate_poll=_gate_poll(common_config))
         
     except SystemExit as e:
         if e.code != 0:
