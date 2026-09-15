@@ -167,7 +167,14 @@ provider = AI,TikuAnevol
 > | 模式 | 保存接口 | 本项目 |
 > |---|---|---|
 > | 单题模式 | `reVersionSubmitTestNew` | 已实现、已实测 |
-> | **整卷模式**（一页显示全部题） | `preview-save` + `paperId`/`examCreateUserId`/**`openc`** | 已实现（未做端到端实测）|
+> | **整卷模式**（一页显示全部题） | `preview-save` + `paperId`/`examCreateUserId`/**`openc`** | **已实现、已端到端实测**（2026-09-15，85 题一次性保存并自动交卷成功，考试状态由「待做」变「已完成」）|
+>
+> 🐛 **同一处修掉的一个流程 bug**：整卷模式答完并自动交卷后，程序**又退回去走单题模式**，
+> 再答一遍 → 被服务端一句「提交失败：考试已经提交」顶回来 → 还写出
+> `exam_answers.md` / `exam_submit_debug.json` 一堆无用文件。用户看到的是
+> 「明明交卷成功了，后面却弹出一大段报错」。根因是 `ExamTaker.start()` 在整卷模式下
+> 会 `return` 结果，而 `run()` 没接这个返回值。现在 `run()` 接住它、非 None 就直接收工
+> （自测见 `selftest_exam_flow.py`）。
 >
 > `paperId` / `examCreateUserId` 能从整卷页里解析出来；`openc` 现在也能自动取了（见上）。
 > **但即便如此，考试仍建议优先用浏览器里的油猴脚本**（如「超星网课助手(考试专版)」/ OCS）——

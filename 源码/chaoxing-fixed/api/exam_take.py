@@ -1372,7 +1372,20 @@ class ExamTaker:
         self.solve_captcha()
         # 考试按时间走，进考场前把题库链的慢间隔压下去（每题能省好几秒）
         tune_tiku_for_exam(self.tiku)
-        self.start()
+
+        # 【关键】start() 只在**整卷模式**下返回非 None —— 那种模式下它已经把整张
+        # 卷子答完并（在 auto_submit 时）交卷了。如果这里不接返回值继续往下走，
+        # 程序会退回「单题模式」再答一遍，然后被服务端一句
+        # 「提交失败：考试已经提交」顶回来，并写出 exam_answers.md /
+        # exam_submit_debug.json 一堆无用文件 —— 实测踩到过（2026-09-15），
+        # 用户看到的就是「明明交卷成功了，后面却弹出一大段报错」。
+        preview_result = self.start()
+        if preview_result is not None:
+            logger.info("=" * 90)
+            logger.info("整卷模式已完成本次考试{}，不再进入单题模式。".format(
+                "并自动交卷" if self.auto_submit else "（未交卷，请你自己核对后提交）"))
+            logger.info("=" * 90)
+            return preview_result
 
         try:
             sheet = self.answer_sheet()
